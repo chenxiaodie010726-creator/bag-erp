@@ -1,65 +1,70 @@
 'use client';
 
 /* ============================================================
- * PO 分组组件（含横向滚动 + 左侧固定列）
+ * PO 分组组件
  *
- * 关键技术：CSS sticky position
- *   - 固定列每个 th/td 设置 position: sticky + left: Xpx + zIndex + 背景色
- *   - 外层容器设置 overflow-x: auto 触发横向滚动
- *   - 固定列宽度固定，不使用 auto，避免错位
- *
- * 固定列宽度分配（合计 764px）：
- *   复选框    40px   left:   0
- *   生产订单号 120px  left:  40
- *   纸格款号   96px  left: 160
- *   主图      64px   left: 256
- *   SKU      260px   left: 320  ← 加宽，支持长编码如 26SP-W1678-1PRSE-AP1-BLK1-ONS-TK
- *   总数量    88px   left: 580
- *   剩余库存  96px   left: 668  ← 最后一列加右阴影
+ * 左侧固定列宽为全局常量（与 PO 无关、不随表格总宽拉伸）
+ * 出库列：列间竖线（border-r）；横向滚动条由外层 overflow-x-auto 提供
  * ============================================================ */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { PoGroupData } from './mockData';
 
 interface PoGroupProps {
   data: PoGroupData;
+  selectedIds: ReadonlySet<string>;
+  onToggleItem: (id: string) => void;
+  onToggleGroupAll: (itemIds: string[], selectAll: boolean) => void;
 }
 
-/* 固定列的宽度和 left 偏移配置（单位：px） */
-const FIXED_COLS = [
-  { key: 'checkbox',     width: 40,  left: 0   },
-  { key: 'wo',           width: 120, left: 40  },
-  { key: 'patternCode',  width: 96,  left: 160 },
-  { key: 'image',        width: 64,  left: 256 },
-  { key: 'sku',          width: 260, left: 320 },
-  { key: 'totalQty',     width: 88,  left: 580 },
-  { key: 'remaining',    width: 96,  left: 668 },
+/** 原 SKU 列 220px 的 65%，与其它固定列一起仅由常量决定，任意 PO 一致 */
+const SKU_COL_W = Math.round(220 * 0.65);
+
+const FIXED_SPEC = [
+  ['checkbox', 40],
+  ['image', 56],
+  ['sku', SKU_COL_W],
+  /* 订单数量、入库数量、差数、剩余库存：原宽度的 1.5 倍 */
+  ['totalQty', Math.round(80 * 1.5)],
+  ['receivedQty', Math.round(80 * 1.5)],
+  ['variance', Math.round(72 * 1.5)],
+  ['remaining', Math.round(92 * 1.5)],
 ] as const;
 
-const FIXED_TOTAL_WIDTH = 764;  // 固定列总宽度之和
-const DYNAMIC_COL_WIDTH = 116;  // 动态出库列宽度
+type FixedKey = (typeof FIXED_SPEC)[number][0];
 
-export default function PoGroup({ data }: PoGroupProps) {
+const FIXED_LAYOUT: Record<FixedKey, { left: number; width: number }> = (() => {
+  let acc = 0;
+  const o = {} as Record<FixedKey, { left: number; width: number }>;
+  for (const [key, w] of FIXED_SPEC) {
+    o[key] = { left: acc, width: w };
+    acc += w;
+  }
+  return o;
+})();
+
+const FIXED_TOTAL_WIDTH = FIXED_SPEC.reduce((s, [, w]) => s + w, 0);
+
+/** 出库列宽：原 116px 的 1.5 倍 */
+const DYNAMIC_COL_WIDTH = Math.round(116 * 1.5);
+
+const TRAIL_WO = 110;
+const TRAIL_PATTERN = 88;
+const RAIL_W = 44;
+
+export default function PoGroup({ data, selectedIds, onToggleItem, onToggleGroupAll }: PoGroupProps) {
   const [expanded, setExpanded] = useState(true);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [prodMetaOpen, setProdMetaOpen] = useState(false);
+
+  const itemIds = data.items.map((i) => i.id);
+  const allChecked = data.items.length > 0 && data.items.every((i) => selectedIds.has(i.id));
 
   function toggleSelectAll() {
-    if (selected.size === data.items.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(data.items.map((i) => i.id)));
-    }
+    onToggleGroupAll(itemIds, !allChecked);
   }
 
-  function toggleSelect(id: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }
-
-  function stickyStyle(left: number, width: number, isHeader = false): React.CSSProperties {
+  function stickyStyle(key: FixedKey, isHeader = false): React.CSSProperties {
+    const { left, width } = FIXED_LAYOUT[key];
     return {
       position: 'sticky',
       left,
@@ -71,18 +76,40 @@ export default function PoGroup({ data }: PoGroupProps) {
     };
   }
 
-  /* 最后一个固定列（剩余库存）加右阴影 */
-  const lastFixedStyle = (isHeader = false): React.CSSProperties => ({
-    ...stickyStyle(668, 96, isHeader),
-    boxShadow: '4px 0 6px -2px rgba(0,0,0,0.08)',
-  });
+  const lastFixedStyle = (isHeader = false): React.CSSProperties => {
+    const { left, width } = FIXED_LAYOUT.remaining;
+    return {
+      position: 'sticky',
+      left,
+      width,
+      minWidth: width,
+      maxWidth: width,
+      zIndex: isHeader ? 3 : 1,
+      background: isHeader ? '#f9fafb' : '#ffffff',
+      boxShadow: '4px 0 6px -2px rgba(0,0,0,0.08)',
+    };
+  };
 
-  const allChecked = selected.size === data.items.length && data.items.length > 0;
+  const tableMinWidth = useMemo(
+    () =>
+      FIXED_TOTAL_WIDTH +
+      data.columns.length * DYNAMIC_COL_WIDTH +
+      (prodMetaOpen ? TRAIL_WO + TRAIL_PATTERN : 0),
+    [data.columns.length, prodMetaOpen]
+  );
+
+  /** 出库列：列间竖线 */
+  const shipmentCellClass =
+    'border-r border-gray-200 bg-white px-3 py-3 align-top';
+
+  /** 数量区竖线：订单数量 / 入库数量 / 差数 右侧 */
+  const qtyColSep = 'border-r border-gray-200';
+  /** 剩余库存 与 出库区 之间的加强分隔线 */
+  const remainingOutboundSep = 'border-r-2 border-gray-300';
 
   return (
     <div className="mb-4 border border-gray-200 rounded-lg overflow-hidden bg-white">
 
-      {/* ===== PO 分组头部 ===== */}
       <div className="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-200">
         <div className="flex items-center gap-3">
           <button
@@ -92,7 +119,6 @@ export default function PoGroup({ data }: PoGroupProps) {
           >
             ▶
           </button>
-          {/* PO号（客户订单号） */}
           <span className="font-semibold text-gray-800">{data.poNumber}</span>
           <span className="text-sm text-gray-500">下单日期：{data.orderDate}</span>
         </div>
@@ -112,184 +138,247 @@ export default function PoGroup({ data }: PoGroupProps) {
         </div>
       </div>
 
-      {/* ===== 表格区域（仅在展开时显示） ===== */}
       {expanded && (
-        <div className="overflow-x-auto">
-          <table
-            className="border-collapse text-sm"
-            style={{ tableLayout: 'fixed', minWidth: `${FIXED_TOTAL_WIDTH + data.columns.length * DYNAMIC_COL_WIDTH}px` }}
-          >
+        <div className="flex w-full min-w-0">
+          <div className="min-w-0 flex-1 overflow-x-auto">
+            {/*
+              固定宽度 = tableMinWidth，禁止 w-full 拉伸，避免不同 PO 因总宽不同被浏览器重新分配列宽
+            */}
+            <table
+              className="border-collapse text-sm"
+              style={{
+                tableLayout: 'fixed',
+                width: tableMinWidth,
+                minWidth: tableMinWidth,
+              }}
+            >
 
-            {/* ---- 列宽声明 ---- */}
-            <colgroup>
-              {FIXED_COLS.map((col) => (
-                <col key={col.key} style={{ width: col.width }} />
-              ))}
-              {data.columns.map((col) => (
-                <col key={col.key} style={{ width: DYNAMIC_COL_WIDTH }} />
-              ))}
-            </colgroup>
-
-            {/* ---- 表头 ---- */}
-            <thead>
-              <tr className="border-b border-gray-200">
-
-                {/* 复选框 */}
-                <th style={stickyStyle(0, 40, true)} className="px-2 py-3 text-center">
-                  <input
-                    type="checkbox"
-                    checked={allChecked}
-                    onChange={toggleSelectAll}
-                    className="w-3.5 h-3.5 cursor-pointer"
-                  />
-                </th>
-
-                {/* 生产订单号 */}
-                <th style={stickyStyle(40, 120, true)} className="px-3 py-3 text-left text-xs font-medium text-gray-500 whitespace-nowrap">
-                  生产订单号
-                </th>
-
-                {/* 纸格款号 */}
-                <th style={stickyStyle(160, 96, true)} className="px-3 py-3 text-left text-xs font-medium text-gray-500 whitespace-nowrap">
-                  纸格款号
-                </th>
-
-                {/* 主图 */}
-                <th style={stickyStyle(256, 64, true)} className="px-3 py-3 text-left text-xs font-medium text-gray-500">
-                  主图
-                </th>
-
-                {/* SKU编码（加宽） */}
-                <th style={stickyStyle(320, 260, true)} className="px-3 py-3 text-left text-xs font-medium text-gray-500">
-                  SKU 编码
-                </th>
-
-                {/* 订单总数量 */}
-                <th style={stickyStyle(580, 88, true)} className="px-3 py-3 text-right text-xs font-medium text-gray-500 whitespace-nowrap">
-                  订单数量
-                </th>
-
-                {/* 剩余库存（最后固定列，加阴影） */}
-                <th style={lastFixedStyle(true)} className="px-3 py-3 text-right text-xs font-medium text-gray-500 whitespace-nowrap">
-                  剩余库存
-                </th>
-
-                {/* 动态出库列 */}
-                {data.columns.map((col) => (
-                  <th
-                    key={col.key}
-                    style={{ width: DYNAMIC_COL_WIDTH, minWidth: DYNAMIC_COL_WIDTH }}
-                    className="px-3 py-3 text-center"
-                  >
-                    <div className="text-xs font-medium text-gray-700">{col.date}</div>
-                    <div className="text-xs text-gray-400 mt-0.5">{col.shipmentNo}</div>
-                  </th>
+              <colgroup>
+                {FIXED_SPEC.map(([key]) => (
+                  <col key={key} style={{ width: FIXED_LAYOUT[key as FixedKey].width }} />
                 ))}
-              </tr>
-            </thead>
+                {data.columns.map((col) => (
+                  <col key={col.key} style={{ width: DYNAMIC_COL_WIDTH }} />
+                ))}
+                {prodMetaOpen && (
+                  <>
+                    <col style={{ width: TRAIL_WO }} />
+                    <col style={{ width: TRAIL_PATTERN }} />
+                  </>
+                )}
+              </colgroup>
 
-            {/* ---- 表体 ---- */}
-            <tbody>
-              {data.items.map((item, rowIndex) => {
-                const isSelected = selected.has(item.id);
-                const rowBg = isSelected ? '#eff6ff' : rowIndex % 2 === 0 ? '#ffffff' : '#fafafa';
+              <thead>
+                <tr className="border-b border-gray-200">
 
-                return (
-                  <tr
-                    key={item.id}
-                    className="border-b border-gray-100 hover:bg-blue-50 transition-colors"
+                  <th style={stickyStyle('checkbox', true)} className="px-2 py-3 text-center">
+                    <input
+                      type="checkbox"
+                      checked={allChecked}
+                      onChange={toggleSelectAll}
+                      className="w-3.5 h-3.5 cursor-pointer"
+                    />
+                  </th>
+
+                  <th style={stickyStyle('image', true)} className="px-3 py-3 text-left text-xs font-medium text-gray-500">
+                    主图
+                  </th>
+
+                  <th style={stickyStyle('sku', true)} className="px-3 py-3 text-left text-xs font-medium text-gray-500">
+                    SKU 编码
+                  </th>
+
+                  <th style={stickyStyle('totalQty', true)} className={`px-3 py-3 text-left text-xs font-medium text-gray-500 whitespace-nowrap ${qtyColSep}`}>
+                    订单数量
+                  </th>
+
+                  <th style={stickyStyle('receivedQty', true)} className={`px-3 py-3 text-left text-xs font-medium text-gray-500 whitespace-nowrap ${qtyColSep}`}>
+                    入库数量
+                  </th>
+
+                  <th
+                    style={stickyStyle('variance', true)}
+                    className={`px-3 py-3 text-left text-xs font-medium text-gray-500 whitespace-nowrap ${qtyColSep}`}
+                    title="差数 = 订单数量 − 入库数量"
                   >
+                    差数
+                  </th>
 
-                    {/* 复选框 */}
-                    <td style={{ ...stickyStyle(0, 40), background: rowBg }} className="px-2 py-3 text-center">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => toggleSelect(item.id)}
-                        className="w-3.5 h-3.5 cursor-pointer"
-                      />
-                    </td>
+                  <th style={lastFixedStyle(true)} className={`px-3 py-3 text-left text-xs font-medium text-gray-500 whitespace-nowrap ${remainingOutboundSep}`}>
+                    剩余库存
+                  </th>
 
-                    {/* 生产订单号 */}
-                    <td style={{ ...stickyStyle(40, 120), background: rowBg }} className="px-3 py-3 whitespace-nowrap">
-                      {item.wo
-                        ? <span className="text-gray-700 font-mono text-xs">{item.wo}</span>
-                        : <span className="text-gray-400 italic text-xs">未关联</span>
-                      }
-                    </td>
+                  {data.columns.map((col) => (
+                    <th
+                      key={col.key}
+                      style={{ width: DYNAMIC_COL_WIDTH, minWidth: DYNAMIC_COL_WIDTH }}
+                      className={`${shipmentCellClass} text-center`}
+                    >
+                      <div className="text-xs font-medium text-gray-700">{col.date}</div>
+                      <div className="text-xs text-gray-400 mt-0.5">{col.shipmentNo}</div>
+                    </th>
+                  ))}
 
-                    {/* 纸格款号 */}
-                    <td style={{ ...stickyStyle(160, 96), background: rowBg }} className="px-3 py-3 whitespace-nowrap">
-                      {item.patternCode
-                        ? <span className="text-gray-700 font-mono text-xs">{item.patternCode}</span>
-                        : <span className="text-gray-300 text-xs">—</span>
-                      }
-                    </td>
+                  {prodMetaOpen && (
+                    <>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-600 whitespace-nowrap border-l border-gray-200 bg-gray-50">
+                        生产订单号
+                      </th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-600 whitespace-nowrap bg-gray-50">
+                        纸格款号
+                      </th>
+                    </>
+                  )}
+                </tr>
+              </thead>
 
-                    {/* 主图 */}
-                    <td style={{ ...stickyStyle(256, 64), background: rowBg }} className="px-2 py-3">
-                      {item.imageUrl
-                        ? (
-                          <img
-                            src={item.imageUrl}
-                            alt={item.sku}
-                            className="w-9 h-9 object-cover rounded border border-gray-200"
-                          />
+              <tbody>
+                {data.items.map((item, rowIndex) => {
+                  const isSelected = selectedIds.has(item.id);
+                  const rowBg = isSelected ? '#eff6ff' : rowIndex % 2 === 0 ? '#ffffff' : '#fafafa';
+                  const metaBg = isSelected ? '#eff6ff' : rowIndex % 2 === 0 ? '#fafafa' : '#f3f4f6';
+
+                  return (
+                    <tr
+                      key={item.id}
+                      className="border-b border-gray-100 hover:bg-blue-50 transition-colors"
+                    >
+
+                      <td style={{ ...stickyStyle('checkbox'), background: rowBg }} className="px-2 py-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => onToggleItem(item.id)}
+                          className="w-3.5 h-3.5 cursor-pointer"
+                        />
+                      </td>
+
+                      <td style={{ ...stickyStyle('image'), background: rowBg }} className="px-2 py-3">
+                        {item.imageUrl
+                          ? (
+                            <img src={item.imageUrl} alt={item.sku}
+                              className="w-9 h-9 object-cover rounded border border-gray-200" />
+                          ) : (
+                            <div className="w-9 h-9 bg-gray-100 rounded border border-gray-200 flex items-center justify-center text-gray-300 text-xs">
+                              无图
+                            </div>
+                          )
+                        }
+                      </td>
+
+                      <td style={{ ...stickyStyle('sku'), background: rowBg }} className="px-3 py-3">
+                        <span title={item.sku} className="text-gray-700 font-mono text-xs block truncate">
+                          {item.sku}
+                        </span>
+                      </td>
+
+                      <td style={{ ...stickyStyle('totalQty'), background: rowBg }} className={`px-3 py-3 text-left text-gray-700 text-sm ${qtyColSep}`}>
+                        {item.totalQty.toLocaleString()}
+                      </td>
+
+                      <td style={{ ...stickyStyle('receivedQty'), background: rowBg }} className={`px-3 py-3 text-left text-gray-700 text-sm ${qtyColSep}`}>
+                        {item.receivedQty.toLocaleString()}
+                      </td>
+
+                      {(() => {
+                        const variance = item.totalQty - item.receivedQty;
+                        return (
+                          <td
+                            style={{ ...stickyStyle('variance'), background: rowBg }}
+                            className={`px-3 py-3 text-left text-sm ${qtyColSep}`}
+                          >
+                            {variance === 0
+                              ? <span className="text-gray-300">—</span>
+                              : variance > 0
+                                ? <span className="font-semibold text-orange-500">▼ {variance.toLocaleString()}</span>
+                                : <span className="font-semibold text-blue-500">▲ {Math.abs(variance).toLocaleString()}</span>
+                            }
+                          </td>
+                        );
+                      })()}
+
+                      <td style={{ ...lastFixedStyle(), background: rowBg }} className={`px-3 py-3 text-left font-medium ${remainingOutboundSep}`}>
+                        {item.remaining < 0 ? (
+                          <span className="inline-flex items-center gap-0.5 text-red-600 font-semibold">
+                            ⚠ {item.remaining.toLocaleString()}
+                          </span>
+                        ) : item.remaining === 0 ? (
+                          <span className="text-gray-400">0</span>
                         ) : (
-                          <div className="w-9 h-9 bg-gray-100 rounded border border-gray-200 flex items-center justify-center text-gray-300 text-xs">
-                            无图
-                          </div>
-                        )
-                      }
-                    </td>
+                          <span className="text-green-600">{item.remaining.toLocaleString()}</span>
+                        )}
+                      </td>
 
-                    {/* SKU编码（加宽，单行截断 + tooltip） */}
-                    <td style={{ ...stickyStyle(320, 260), background: rowBg }} className="px-3 py-3">
-                      <span
-                        title={item.sku}
-                        className="text-gray-700 font-mono text-xs block truncate"
-                      >
-                        {item.sku}
-                      </span>
-                    </td>
+                      {data.columns.map((col) => {
+                        const qty = item.shipments[col.key];
+                        return (
+                          <td
+                            key={col.key}
+                            style={{ width: DYNAMIC_COL_WIDTH, minWidth: DYNAMIC_COL_WIDTH }}
+                            className={`${shipmentCellClass} text-center text-gray-700`}
+                          >
+                            {qty === null || qty === undefined
+                              ? <span className="text-gray-300">—</span>
+                              : qty === 0
+                                ? <span className="text-gray-400">0</span>
+                                : qty.toLocaleString()
+                            }
+                          </td>
+                        );
+                      })}
 
-                    {/* 订单总数量 */}
-                    <td style={{ ...stickyStyle(580, 88), background: rowBg }} className="px-3 py-3 text-right text-gray-700 text-sm">
-                      {item.totalQty.toLocaleString()}
-                    </td>
+                      {prodMetaOpen && (
+                        <>
+                          <td
+                            className="px-2 py-3 whitespace-nowrap border-l border-gray-200"
+                            style={{ background: metaBg }}
+                          >
+                            {item.wo
+                              ? <span className="text-gray-700 font-mono text-xs">{item.wo}</span>
+                              : <span className="text-gray-400 italic text-xs">未关联</span>
+                            }
+                          </td>
+                          <td className="px-2 py-3 whitespace-nowrap" style={{ background: metaBg }}>
+                            {item.patternCode
+                              ? <span className="text-gray-700 font-mono text-xs">{item.patternCode}</span>
+                              : <span className="text-gray-300 text-xs">—</span>
+                            }
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
 
-                    {/* 剩余库存 */}
-                    <td style={{ ...lastFixedStyle(), background: rowBg }} className="px-3 py-3 text-right font-medium">
-                      <span className={item.remaining > 0 ? 'text-green-600' : 'text-gray-400'}>
-                        {item.remaining.toLocaleString()}
-                      </span>
-                    </td>
+            </table>
+          </div>
 
-                    {/* 动态出库列 */}
-                    {data.columns.map((col) => {
-                      const qty = item.shipments[col.key];
-                      return (
-                        <td
-                          key={col.key}
-                          style={{ width: DYNAMIC_COL_WIDTH }}
-                          className="px-3 py-3 text-center text-gray-700"
-                        >
-                          {qty === null || qty === undefined
-                            ? <span className="text-gray-300">—</span>
-                            : qty === 0
-                              ? <span className="text-gray-400">0</span>
-                              : qty.toLocaleString()
-                          }
-                        </td>
-                      );
-                    })}
-
-                  </tr>
-                );
-              })}
-            </tbody>
-
-          </table>
+          <div
+            className="flex shrink-0 flex-col items-center border-l border-gray-200 bg-gray-50 px-1 py-3"
+            style={{ width: RAIL_W, alignSelf: 'stretch' }}
+          >
+            {prodMetaOpen ? (
+              <button
+                type="button"
+                onClick={() => setProdMetaOpen(false)}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded border border-gray-300 text-gray-500 hover:bg-gray-100"
+                title="折叠生产信息"
+              >
+                ▸
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setProdMetaOpen(true)}
+                className="flex min-h-[72px] w-full flex-col items-center justify-center gap-0.5 rounded border border-dashed border-gray-300 py-2 text-[10px] leading-tight text-gray-500 hover:bg-gray-100"
+                title="展开：生产订单号、纸格款号"
+              >
+                <span className="text-xs">◂</span>
+                <span>展开</span>
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

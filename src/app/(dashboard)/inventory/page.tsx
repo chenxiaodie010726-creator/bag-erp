@@ -11,12 +11,28 @@ import PoGroup from './_components/PoGroup';
 import ImportModal from './_components/ImportModal';
 import { MOCK_PO_GROUPS } from './_components/mockData';
 import type { PoGroupData } from './_components/mockData';
-import { exportInventoryToExcel } from '@/lib/excelUtils';
+import { exportInventoryToExcel, filterPoGroupsBySkuIds } from '@/lib/excelUtils';
+import { poMatchesFilter } from '@/lib/poNumber';
 
 export default function InventoryPage() {
 
-  /* ===== 数据源（初始使用模拟数据，导入后替换） ===== */
+  /* ===== 数据源（初始使用模拟数据，导入后替换并持久化到 localStorage） ===== */
   const [poGroups, setPoGroups] = useState<PoGroupData[]>(MOCK_PO_GROUPS);
+
+  /* 页面加载时，从 localStorage 恢复上次导入的数据（如有） */
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('cf_erp_inventory');
+      if (stored) {
+        const parsed: PoGroupData[] = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setPoGroups(parsed);
+        }
+      }
+    } catch {
+      /* localStorage 读取失败时静默降级到模拟数据，不影响使用 */
+    }
+  }, []);
 
   /* ===== 弹窗状态 ===== */
   const [importModalOpen, setImportModalOpen] = useState(false);
@@ -25,17 +41,60 @@ export default function InventoryPage() {
   const [filterOpen, setFilterOpen] = useState(true);
 
   /* ===== 筛选条件 ===== */
-  const [filterPo, setFilterPo] = useState('');               // 客户 PO 号关键词
+  const [filterPos, setFilterPos] = useState<string[]>([]);   // 客户 PO 号（多值，每行一个）
   const [filterSkus, setFilterSkus] = useState<string[]>([]);  // SKU 编码（多值）
   const [filterPatternCode, setFilterPatternCode] = useState(''); // 纸格款号关键词
   const [filterWo, setFilterWo] = useState('');               // 生产订单号关键词
   const [filterShipped, setFilterShipped] = useState('全部'); // 出货状态
   const [filterStock, setFilterStock] = useState('全部');     // 库存状态
 
-  /* ===== 导入确认回调 ===== */
+  /* ===== 表格行勾选（用于「导出选中」） ===== */
+  const [selectedSkuIds, setSelectedSkuIds] = useState<Set<string>>(() => new Set());
+
+  function toggleSkuSelected(id: string) {
+    setSelectedSkuIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function toggleGroupSkuSelected(itemIds: string[], selectAll: boolean) {
+    setSelectedSkuIds((prev) => {
+      const next = new Set(prev);
+      if (selectAll) itemIds.forEach((id) => next.add(id));
+      else itemIds.forEach((id) => next.delete(id));
+      return next;
+    });
+  }
+
+  function handleExportAll() {
+    exportInventoryToExcel(filteredGroups, '出货进度-全部.xlsx');
+  }
+
+  function handleExportSelected() {
+    if (selectedSkuIds.size === 0) {
+      alert('请先勾选要导出的行');
+      return;
+    }
+    const only = filterPoGroupsBySkuIds(filteredGroups, selectedSkuIds);
+    if (only.length === 0) {
+      alert('没有可导出的数据');
+      return;
+    }
+    exportInventoryToExcel(only, '出货进度-已选.xlsx');
+  }
+
+  /* ===== 导入确认回调：更新状态 + 持久化到 localStorage ===== */
   function handleImportConfirm(data: PoGroupData[]) {
     setPoGroups(data);
     handleReset();
+    try {
+      /* 将导入数据存入 localStorage，刷新后不丢失 */
+      localStorage.setItem('cf_erp_inventory', JSON.stringify(data));
+    } catch {
+      /* 存储空间不足时静默忽略，数据仍在内存中可用 */
+    }
   }
 
   /* ===== 过滤逻辑 ===== */
@@ -46,7 +105,7 @@ export default function InventoryPage() {
 
     return poGroups
       .filter((po) => {
-        if (filterPo && !po.poNumber.toLowerCase().includes(filterPo.toLowerCase())) return false;
+        if (filterPos.length > 0 && !filterPos.some((line) => poMatchesFilter(po.poNumber, line))) return false;
         return true;
       })
       .map((po) => {
@@ -78,21 +137,49 @@ export default function InventoryPage() {
         return { ...po, items: filteredItems };
       })
       .filter((po) => po.items.length > 0);
-  }, [poGroups, filterPo, filterSkus, filterPatternCode, filterWo, filterShipped, filterStock]);
+  }, [poGroups, filterPos, filterSkus, filterPatternCode, filterWo, filterShipped, filterStock]);
+
+  /* 筛选结果变化时，去掉已不可见行的勾选，避免导出幽灵 id */
+  useEffect(() => {
+    const visible = new Set(filteredGroups.flatMap((g) => g.items.map((i) => i.id)));
+    setSelectedSkuIds((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (visible.has(id)) next.add(id);
+        else changed = true;
+      });
+      if (!changed && next.size === prev.size) return prev;
+      return next;
+    });
+  }, [filteredGroups]);
 
   /* ===== 统计 ===== */
   const totalOrders = filteredGroups.length;
   const totalSkus = filteredGroups.reduce((sum, po) => sum + po.items.length, 0);
 
   /* ===== 重置筛选 ===== */
+  /* 重置筛选条件（不清除导入数据） */
   function handleReset() {
-    setFilterPo('');
+    setFilterPos([]);
     setFilterSkus([]);
     setFilterPatternCode('');
     setFilterWo('');
     setFilterShipped('全部');
     setFilterStock('全部');
+    setSelectedSkuIds(new Set());
   }
+
+  /* 清除导入数据，恢复模拟数据 */
+  function handleClearImport() {
+    if (!confirm('确认清除已导入数据，恢复为演示数据吗？')) return;
+    try { localStorage.removeItem('cf_erp_inventory'); } catch { /* ignore */ }
+    setPoGroups(MOCK_PO_GROUPS);
+    handleReset();
+  }
+
+  /* 判断当前是否使用了导入数据（用于决定是否显示「清除」按钮） */
+  const isImported = poGroups !== MOCK_PO_GROUPS;
 
   return (
     <div className="flex flex-col gap-4">
@@ -107,15 +194,27 @@ export default function InventoryPage() {
           <span className="text-sm text-gray-500 bg-gray-100 px-2 py-0.5 rounded">
             共 <b className="text-gray-700">{totalOrders}</b> 个订单，
             <b className="text-gray-700">{totalSkus}</b> 个 SKU
+            {selectedSkuIds.size > 0 && (
+              <>
+                ，已选 <b className="text-blue-600">{selectedSkuIds.size}</b> 行
+              </>
+            )}
           </span>
         </div>
 
         <div className="flex items-center gap-2">
           <TopBarButton icon="🔽" label="筛选" onClick={() => setFilterOpen((v) => !v)} active={filterOpen} />
-          <TopBarButton icon="⊞" label="列设置" onClick={() => {}} />
-          <TopBarButton icon="↕" label="排序" onClick={() => {}} />
-          <TopBarButton icon="⊟" label="分组" onClick={() => {}} />
           <TopBarButton icon="↺" label="重置" onClick={handleReset} />
+          {/* 仅在使用导入数据时显示「清除导入」按钮 */}
+          {isImported && (
+            <button
+              onClick={handleClearImport}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-500 border border-red-200 rounded-md hover:bg-red-50 transition-colors"
+              title="清除导入数据，恢复演示数据"
+            >
+              ✕ 清除导入
+            </button>
+          )}
           <button
             onClick={() => setImportModalOpen(true)}
             className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
@@ -123,10 +222,25 @@ export default function InventoryPage() {
             ↑ 导入
           </button>
           <button
-            onClick={() => exportInventoryToExcel(filteredGroups)}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm bg-gray-900 text-white rounded-md hover:bg-gray-700 transition-colors font-medium"
+            type="button"
+            onClick={handleExportAll}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
           >
-            ↓ 导出
+            ↓ 导出全部
+          </button>
+          <button
+            type="button"
+            onClick={handleExportSelected}
+            disabled={selectedSkuIds.size === 0}
+            title={selectedSkuIds.size === 0 ? '请先在表格中勾选行' : '仅导出已勾选的行'}
+            className={[
+              'flex items-center gap-1.5 px-3 py-2 text-sm rounded-md font-medium transition-colors',
+              selectedSkuIds.size === 0
+                ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                : 'bg-gray-900 text-white hover:bg-gray-700',
+            ].join(' ')}
+          >
+            ↓ 导出选中
           </button>
         </div>
       </div>
@@ -147,15 +261,18 @@ export default function InventoryPage() {
           {/* 第一行：核心筛选项 */}
           <div className="grid grid-cols-5 gap-3">
 
-            {/* 1. 客户 PO 号（首位，最重要） */}
-            <FilterItem label="客户 PO 号">
-              <input
-                type="text"
-                placeholder="输入 PO 号搜索"
-                value={filterPo}
-                onChange={(e) => setFilterPo(e.target.value)}
-                className={INPUT_CLS}
-              />
+            {/* 1. 客户 PO 号（多值，与 SKU 筛选相同交互） */}
+            <FilterItem label={
+              <span className="flex items-center gap-1.5">
+                客户 PO 号
+                {filterPos.length > 0 && (
+                  <span className="inline-flex items-center justify-center h-4 min-w-4 px-1 text-[10px] font-bold bg-blue-500 text-white rounded-full">
+                    {filterPos.length}
+                  </span>
+                )}
+              </span>
+            }>
+              <MultiLineTextFilter variant="po" values={filterPos} onChange={setFilterPos} />
             </FilterItem>
 
             {/* 2. SKU 编码（多值筛选，占 2 列） */}
@@ -170,7 +287,7 @@ export default function InventoryPage() {
                   )}
                 </span>
               }>
-                <MultiSkuFilter values={filterSkus} onChange={setFilterSkus} />
+                <MultiLineTextFilter variant="sku" values={filterSkus} onChange={setFilterSkus} />
               </FilterItem>
             </div>
 
@@ -263,7 +380,13 @@ export default function InventoryPage() {
         </div>
       ) : (
         filteredGroups.map((po) => (
-          <PoGroup key={po.poNumber} data={po} />
+          <PoGroup
+            key={po.poNumber}
+            data={po}
+            selectedIds={selectedSkuIds}
+            onToggleItem={toggleSkuSelected}
+            onToggleGroupAll={toggleGroupSkuSelected}
+          />
         ))
       )}
 
@@ -273,15 +396,32 @@ export default function InventoryPage() {
 
 
 /* ============================================================
- * 多值 SKU 筛选组件
+ * 多行文本筛选（客户 PO / SKU 共用）
  * 支持手动输入、粘贴多行、导入 .txt 文件
  * ============================================================ */
-interface MultiSkuFilterProps {
+const MULTI_LINE_FILTER_COPY = {
+  sku: {
+    summary: (n: number) => `已筛选 ${n} 个 SKU`,
+    panelHint: '每行输入一个 SKU 编码，支持直接粘贴',
+    placeholder: 'AP1-BC-BLK\nAP1-BC-RED\n26SP-W1678-1PRSE-AP1-BLK1-ONS-TK\n...',
+    countNoun: 'SKU',
+  },
+  po: {
+    summary: (n: number) => `已筛选 ${n} 个 PO`,
+    panelHint: '每行输入一个客户 PO 号（如 PO#260501），支持直接粘贴',
+    placeholder: 'PO#260501\nPO#260502\n260501',
+    countNoun: 'PO',
+  },
+} as const;
+
+interface MultiLineTextFilterProps {
+  variant: keyof typeof MULTI_LINE_FILTER_COPY;
   values: string[];
   onChange: (v: string[]) => void;
 }
 
-function MultiSkuFilter({ values, onChange }: MultiSkuFilterProps) {
+function MultiLineTextFilter({ variant, values, onChange }: MultiLineTextFilterProps) {
+  const copy = MULTI_LINE_FILTER_COPY[variant];
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
@@ -307,7 +447,6 @@ function MultiSkuFilter({ values, onChange }: MultiSkuFilterProps) {
     setOpen(false);
   }
 
-  /* 导入 .txt 文件 */
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -320,7 +459,6 @@ function MultiSkuFilter({ values, onChange }: MultiSkuFilterProps) {
     e.target.value = '';
   }
 
-  /* 点击外部关闭 */
   useEffect(() => {
     if (!open) return;
     function onMouseDown(e: MouseEvent) {
@@ -338,7 +476,6 @@ function MultiSkuFilter({ values, onChange }: MultiSkuFilterProps) {
   return (
     <div ref={containerRef} className="relative">
 
-      {/* 触发按钮 */}
       <button
         type="button"
         onClick={handleOpen}
@@ -351,18 +488,16 @@ function MultiSkuFilter({ values, onChange }: MultiSkuFilterProps) {
       >
         {values.length === 0
           ? '支持多个，每行一个'
-          : `已筛选 ${values.length} 个 SKU`
+          : copy.summary(values.length)
         }
       </button>
 
-      {/* 展开面板 */}
       {open && (
         <div className="absolute top-full left-0 z-30 mt-1 bg-white border border-gray-300 rounded-lg shadow-xl p-3 w-96">
 
-          {/* 头部 */}
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-gray-600">
-              每行输入一个 SKU 编码，支持直接粘贴
+              {copy.panelHint}
             </span>
             <button
               type="button"
@@ -373,20 +508,18 @@ function MultiSkuFilter({ values, onChange }: MultiSkuFilterProps) {
             </button>
           </div>
 
-          {/* 文本区域 */}
           <textarea
             autoFocus
             rows={7}
             className="w-full px-2.5 py-2 text-xs font-mono border border-gray-200 rounded-md resize-none focus:outline-none focus:ring-1 focus:ring-blue-400 leading-[1.6] placeholder:text-gray-300"
-            placeholder={'AP1-BC-BLK\nAP1-BC-RED\n26SP-W1678-1PRSE-AP1-BLK1-ONS-TK\n...'}
+            placeholder={copy.placeholder}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
 
-          {/* 底部操作 */}
           <div className="flex items-center justify-between mt-2">
             <span className="text-xs text-gray-400">
-              {draftCount > 0 ? `${draftCount} 个 SKU` : '暂无内容'}
+              {draftCount > 0 ? `${draftCount} 个 ${copy.countNoun}` : '暂无内容'}
             </span>
             <div className="flex items-center gap-2">
               <button
@@ -406,7 +539,6 @@ function MultiSkuFilter({ values, onChange }: MultiSkuFilterProps) {
             </div>
           </div>
 
-          {/* 隐藏文件输入 */}
           <input
             ref={fileRef}
             type="file"

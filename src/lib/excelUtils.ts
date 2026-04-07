@@ -10,6 +10,7 @@ import type {
   SkuItem,
   ShipmentColumn,
 } from '@/app/(dashboard)/inventory/_components/mockData';
+import { normalizePoNumber } from '@/lib/poNumber';
 
 /* ============================================================
  * 公共类型
@@ -91,7 +92,8 @@ function parseQty(val: unknown): number | null {
 
 /**
  * 解析上传的 Excel 文件
- * 期望的列顺序：PO号 | 公司订单号 | SKU编码 | 订单总数量 | 出库日期1 | 出库数量1 | ... | 客户编码
+ * 期望的列顺序：PO号 | 公司订单号 | SKU编码 | 订单总数量 | 入库数量 | 出库日期1 | 出库数量1 | ... | 客户编码
+ * 注：「入库数量」列可选；若缺失则默认 = 订单总数量（向前兼容旧模板）
  */
 export async function parseInventoryExcel(file: File): Promise<ParseResult> {
   return new Promise((resolve) => {
@@ -128,12 +130,19 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
         const headerRow = (rows[0] as unknown[]).map((h) => String(h ?? '').trim());
 
         /* 固定列索引 */
-        const COL_PO = 0;       // PO号
-        const COL_WO = 1;       // 公司订单号
-        const COL_SKU = 2;      // SKU编码
-        const COL_QTY = 3;      // 订单总数量
+        const COL_PO  = 0;  // PO号
+        const COL_WO  = 1;  // 公司订单号
+        const COL_SKU = 2;  // SKU编码
+        const COL_QTY = 3;  // 订单总数量
         /* 最后一列是客户编码 */
         const COL_CUSTOMER = headerRow.length - 1;
+
+        /* 检测「入库数量」列是否存在（索引4处）
+         * - 旧模板：第5列直接是「出库日期1」
+         * - 新模板：第5列是「入库数量」，第6列才是「出库日期1」 */
+        const hasReceivedQtyCol = headerRow[4]?.includes('入库');
+        const COL_RECEIVED = hasReceivedQtyCol ? 4 : -1;   // -1 = 不存在
+        const shipmentStartIdx = hasReceivedQtyCol ? 5 : 4; // 出库列从哪里开始
 
         /* 检查必要列名是否存在 */
         const errors: ImportError[] = [];
@@ -144,14 +153,15 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
           errors.push({ row: 1, message: `第C列应为"SKU编码"，当前为"${headerRow[COL_SKU]}"` });
         }
 
-        /* 找到所有出库日期/数量列对（位于索引4到COL_CUSTOMER-1之间，步长2） */
-        const shipmentPairCount = Math.floor((COL_CUSTOMER - 4) / 2);
+        /* 出库日期/数量列对数量 */
+        const shipmentPairCount = Math.floor((COL_CUSTOMER - shipmentStartIdx) / 2);
 
         /* 按 PO号 分组收集行数据 */
         const poMap = new Map<string, Array<{
           wo: string | null;
           sku: string;
           totalQty: number;
+          receivedQty: number;   // 实际入库数量
           customerCode: string | null;
           rawShipments: Array<{ date: string; qty: number }>;
         }>>();
@@ -161,8 +171,9 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
           /* 跳过完全空行 */
           if (!row || row.every((c) => c === null || c === '')) continue;
 
-          const rowNum = i + 1; // 人类可读的行号（Excel从1开始，标题占第1行）
-          const poNumber = String(row[COL_PO] ?? '').trim();
+          const rowNum = i + 1;
+          const rawPo = String(row[COL_PO] ?? '').trim();
+          const poNumber = rawPo ? normalizePoNumber(rawPo) : '';
           const wo = row[COL_WO] ? String(row[COL_WO]).trim() : null;
           const sku = String(row[COL_SKU] ?? '').trim();
           const totalQty = parseQty(row[COL_QTY]);
@@ -176,11 +187,18 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
             continue;
           }
 
+          /* 入库数量：有则取，无则默认等于订单数量（兼容旧模板） */
+          let receivedQty: number = totalQty;
+          if (COL_RECEIVED >= 0) {
+            const rv = parseQty(row[COL_RECEIVED]);
+            if (rv !== null && rv >= 0) receivedQty = rv;
+          }
+
           /* 解析出库日期/数量对 */
           const rawShipments: Array<{ date: string; qty: number }> = [];
           for (let p = 0; p < shipmentPairCount; p++) {
-            const dateIdx = 4 + p * 2;
-            const qtyIdx = 5 + p * 2;
+            const dateIdx = shipmentStartIdx + p * 2;
+            const qtyIdx  = shipmentStartIdx + p * 2 + 1;
             const dateStr = normalizeDate(row[dateIdx]);
             const qty = parseQty(row[qtyIdx]);
             if (dateStr && qty !== null) {
@@ -192,7 +210,7 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
           }
 
           if (!poMap.has(poNumber)) poMap.set(poNumber, []);
-          poMap.get(poNumber)!.push({ wo, sku, totalQty, customerCode, rawShipments });
+          poMap.get(poNumber)!.push({ wo, sku, totalQty, receivedQty, customerCode, rawShipments });
         }
 
         /* 如果有严重错误（没有解析出任何数据），直接返回 */
@@ -216,7 +234,12 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
             /* 将日期转为 SQ 单号格式：如 2025/05/10 → SQ250510-001 */
             const digits = date.replace(/\//g, '').slice(2); // "250510"
             const shipmentNo = `SQ${digits}-${String(idx + 1).padStart(3, '0')}`;
-            return { date, shipmentNo, key: `${date}||${shipmentNo}` };
+            return {
+              shipmentId: `imp-${poNumber}-${idx}`,
+              date,
+              shipmentNo,
+              key: `${date}||${shipmentNo}`,
+            };
           });
 
           /* 构建 SkuItem 列表 */
@@ -231,18 +254,22 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
               if (col) shipments[col.key] = s.qty;
             });
 
-            /* 计算剩余库存 = 总数量 - 出库合计 */
+            /* 剩余库存 = 入库数量 - 已出库合计 */
             const shipped = Object.values(shipments)
               .filter((v): v is number => v !== null)
               .reduce((sum, v) => sum + v, 0);
-            const remaining = Math.max(0, r.totalQty - shipped);
+            const receivedQty = r.receivedQty;
+            /* 允许负数：出货超出入库量时 remaining 为负，前端显示红色警告 */
+            const remaining = receivedQty - shipped;
 
             return {
               id: `${poNumber}-${idx + 1}`,
               wo: r.wo,
+              patternCode: null,
               imageUrl: null,
               sku: r.sku,
               totalQty: r.totalQty,
+              receivedQty,
               remaining,
               customerCode: r.customerCode,
               shipments,
@@ -251,6 +278,7 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
 
           /* PO 级别汇总 */
           const poTotalQty = items.reduce((s, i) => s + i.totalQty, 0);
+          const poReceivedQty = items.reduce((s, i) => s + i.receivedQty, 0);
           const poRemaining = items.reduce((s, i) => s + i.remaining, 0);
 
           result.push({
@@ -258,6 +286,7 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
             orderDate: formatDate(new Date()),
             skuCount: items.length,
             totalQty: poTotalQty,
+            receivedQty: poReceivedQty,
             remaining: poRemaining,
             columns,
             items,
@@ -293,6 +322,22 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
  * ============================================================ */
 
 /**
+ * 仅保留勾选的 SKU 行；无匹配行时返回空数组
+ */
+export function filterPoGroupsBySkuIds(
+  groups: PoGroupData[],
+  selectedIds: ReadonlySet<string>
+): PoGroupData[] {
+  if (selectedIds.size === 0) return [];
+  return groups
+    .map((po) => ({
+      ...po,
+      items: po.items.filter((item) => selectedIds.has(item.id)),
+    }))
+    .filter((po) => po.items.length > 0);
+}
+
+/**
  * 将当前页面展示的数据导出为 Excel 文件并触发下载
  * 列结构：PO号 | 下单日期 | 公司订单号 | SKU编码 | 订单总数量 | 剩余库存 | 出库日期1 | 出库数量1 | ... | 客户编码
  */
@@ -309,7 +354,10 @@ export function exportInventoryToExcel(
   const maxShipmentCols = groups.reduce((max, po) => Math.max(max, po.columns.length), 0);
 
   /* 构建标题行 */
-  const header: string[] = ['PO号', '下单日期', '公司订单号', 'SKU编码', '订单总数量', '剩余库存'];
+  const header: string[] = [
+    'PO号', '下单日期', '公司订单号', 'SKU编码',
+    '订单数量', '入库数量', '差数', '剩余库存',
+  ];
   for (let i = 1; i <= maxShipmentCols; i++) {
     header.push(`出库日期${i}`, `出库数量${i}`);
   }
@@ -320,12 +368,15 @@ export function exportInventoryToExcel(
 
   groups.forEach((po) => {
     po.items.forEach((item) => {
+      const variance = item.totalQty - item.receivedQty;  // 差数
       const row: (string | number | null)[] = [
         po.poNumber,
         po.orderDate,
         item.wo ?? '',
         item.sku,
         item.totalQty,
+        item.receivedQty,
+        variance === 0 ? null : variance,   // 0 差数导出为空，突出异常值
         item.remaining,
       ];
 
@@ -350,13 +401,14 @@ export function exportInventoryToExcel(
 
   /* 设置列宽（单位：字符数） */
   ws['!cols'] = [
-    { wch: 12 }, // PO号
+    { wch: 16 }, // PO号
     { wch: 12 }, // 下单日期
     { wch: 14 }, // 公司订单号
-    { wch: 12 }, // SKU编码
-    { wch: 10 }, // 订单总数量
+    { wch: 30 }, // SKU编码（支持长编码）
+    { wch: 10 }, // 订单数量
+    { wch: 10 }, // 入库数量
+    { wch: 8  }, // 差数
     { wch: 10 }, // 剩余库存
-    /* 出库日期/数量列：每对 14+10 */
     ...Array.from({ length: maxShipmentCols }, () => [{ wch: 14 }, { wch: 10 }]).flat(),
     { wch: 12 }, // 客户编码
   ];
@@ -372,11 +424,17 @@ export function exportInventoryToExcel(
  * 包含示例数据
  */
 export function downloadImportTemplate(): void {
-  const header = ['PO号', '公司订单号', 'SKU编码', '订单总数量', '出库日期1', '出库数量1', '出库日期2', '出库数量2', '客户编码'];
+  /* 新模板：含「入库数量」列，位于「订单总数量」之后、出库列之前
+   * 说明：入库数量 = 实际验收入仓数量，可能 ≠ 订单数量
+   *       剩余库存将按「入库数量 - 出库合计」计算 */
+  const header = ['PO号', '公司订单号', 'SKU编码', '订单总数量', '入库数量', '出库日期1', '出库数量1', '出库日期2', '出库数量2', '客户编码'];
   const examples = [
-    ['TC260301', 'TC260301-01', 'SKU-001', 1000, '2025/05/10', 200, '2025/05/20', 300, '客户A'],
-    ['TC260301', 'TC260301-02', 'SKU-002', 2000, '2025/05/10', 450, '2025/05/30', 500, '客户B'],
-    ['TC260302', 'TC260302-01', 'SKU-003', 500,  '2025/06/01', 80,  '',           '',  '客户A'],
+    // 正常案例：入库 = 订单
+    ['PO#260301', 'TC260301-01', 'SKU-001', 1000, 1000, '2025/05/10', 200, '2025/05/20', 300, '客户A'],
+    // 差数案例：订单2000，实际入库1980（少20件）
+    ['PO#260301', 'TC260301-02', 'SKU-002', 2000, 1980, '2025/05/10', 450, '2025/05/30', 500, '客户B'],
+    // 只有一批出库，入库数量留空时等同订单数量
+    ['PO#260302', 'TC260302-01', 'SKU-003', 500,  500,  '2025/06/01', 80,  '',           '',  '客户A'],
   ];
 
   const ws = XLSX.utils.aoa_to_sheet([header, ...examples]);
