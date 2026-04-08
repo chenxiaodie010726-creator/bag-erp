@@ -18,7 +18,7 @@ export interface ShipmentColumn {
 /** 表格中的一行：一个 SKU 的出货进度 */
 export interface SkuItem {
   id: string;                               // work_order_item_id
-  wo: string | null;                        // 公司生产订单号（如 TC250401，null 显示 "?"）
+  wo: string | null;                        // 公司生产订单号（如 TC250401，null 时组件显示"未关联"）
   patternCode: string | null;               // 纸格款号（公司内部款式代码，如 ABC01）
   imageUrl: string | null;                  // SKU 主图 URL
   sku: string;                              // SKU 编码（客户款号，如 AP1-BC-BLK）
@@ -27,7 +27,7 @@ export interface SkuItem {
   //   差数 = totalQty - receivedQty，在组件中计算，不存储，避免数据冗余
   //   剩余库存 = receivedQty - sum(shipments)，同上
   remaining: number;                        // 剩余库存（= 入库数量 - 已出库合计）
-  customerCode?: string | null;             // 客户编码（Excel 导入等场景）
+  customerCode: string | null;             // 客户编码（Excel 导入等场景，无值时传 null）
   shipments: Record<string, number | null>; // key = ShipmentColumn.key，value = 出库数量
 }
 
@@ -39,12 +39,12 @@ export interface PoGroupData {
   totalQty: number;          // 订单总数量（合计）= sum(items.totalQty)
   receivedQty: number;       // 实际入库总量（合计）= sum(items.receivedQty)
   remaining: number;         // 剩余库存（合计）= sum(items.remaining) = receivedQty - shipped
-  columns: ShipmentColumn[]; // 该 PO 下所有出库批次列（按日期排序）
+  columns: ShipmentColumn[]; // 该 PO 下所有出库批次列，必须按 date ASC 排序（接 API 时加 ORDER BY shipment_date ASC）
   items: SkuItem[];          // 该 PO 下的 SKU 出货明细列表
 }
 
-/** 构建出库列唯一键 */
-function k(date: string, shipmentNo: string): string {
+/** 构建出库列唯一键，格式：`date||shipmentNo` */
+export function buildShipmentKey(date: string, shipmentNo: string): string {
   return `${date}||${shipmentNo}`;
 }
 
@@ -71,10 +71,10 @@ export const MOCK_PO_GROUPS: PoGroupData[] = [
     receivedQty: 5750,  // 入库少了 50（差数 = 50）
     remaining: 1120,    // = receivedQty(5750) - shipped(4630)
     columns: [
-      { shipmentId: 's1', date: '2025/05/10', shipmentNo: 'SQ250510-001', key: k('2025/05/10', 'SQ250510-001') },
-      { shipmentId: 's2', date: '2025/05/30', shipmentNo: 'SQ250630-001', key: k('2025/05/30', 'SQ250630-001') },
-      { shipmentId: 's3', date: '2025/06/10', shipmentNo: 'SQ250610-001', key: k('2025/06/10', 'SQ250610-001') },
-      { shipmentId: 's4', date: '2025/06/20', shipmentNo: 'SQ250620-001', key: k('2025/06/20', 'SQ250620-001') },
+      { shipmentId: 's1', date: '2025/05/10', shipmentNo: 'SQ250510-001', key: buildShipmentKey('2025/05/10', 'SQ250510-001') },
+      { shipmentId: 's2', date: '2025/05/30', shipmentNo: 'SQ250630-001', key: buildShipmentKey('2025/05/30', 'SQ250630-001') },
+      { shipmentId: 's3', date: '2025/06/10', shipmentNo: 'SQ250610-001', key: buildShipmentKey('2025/06/10', 'SQ250610-001') },
+      { shipmentId: 's4', date: '2025/06/20', shipmentNo: 'SQ250620-001', key: buildShipmentKey('2025/06/20', 'SQ250620-001') },
     ],
     items: [
       {
@@ -82,11 +82,12 @@ export const MOCK_PO_GROUPS: PoGroupData[] = [
         id: '1', wo: 'TC250501', patternCode: 'ABC01', imageUrl: null, sku: 'AP1-BC-BLK',
         totalQty: 1000, receivedQty: 1000,
         remaining: 200,  // 1000 - (300+300+200+0) = 200
+        customerCode: null,
         shipments: {
-          [k('2025/05/10', 'SQ250510-001')]: 300,
-          [k('2025/05/30', 'SQ250630-001')]: 300,
-          [k('2025/06/10', 'SQ250610-001')]: 200,
-          [k('2025/06/20', 'SQ250620-001')]: 0,
+          [buildShipmentKey('2025/05/10', 'SQ250510-001')]: 300,
+          [buildShipmentKey('2025/05/30', 'SQ250630-001')]: 300,
+          [buildShipmentKey('2025/06/10', 'SQ250610-001')]: 200,
+          [buildShipmentKey('2025/06/20', 'SQ250620-001')]: 0,
         },
       },
       {
@@ -94,11 +95,12 @@ export const MOCK_PO_GROUPS: PoGroupData[] = [
         id: '2', wo: 'TC250501', patternCode: 'ABC01', imageUrl: null, sku: 'AP1-BC-RED',
         totalQty: 2000, receivedQty: 2000,
         remaining: 450,  // 2000 - (800+500+250+0) = 450
+        customerCode: null,
         shipments: {
-          [k('2025/05/10', 'SQ250510-001')]: 800,
-          [k('2025/05/30', 'SQ250630-001')]: 500,
-          [k('2025/06/10', 'SQ250610-001')]: 250,
-          [k('2025/06/20', 'SQ250620-001')]: 0,
+          [buildShipmentKey('2025/05/10', 'SQ250510-001')]: 800,
+          [buildShipmentKey('2025/05/30', 'SQ250630-001')]: 500,
+          [buildShipmentKey('2025/06/10', 'SQ250610-001')]: 250,
+          [buildShipmentKey('2025/06/20', 'SQ250620-001')]: 0,
         },
       },
       {
@@ -106,11 +108,12 @@ export const MOCK_PO_GROUPS: PoGroupData[] = [
         id: '3', wo: 'TC250502', patternCode: 'WL0305', imageUrl: null, sku: 'WL1-RD-BRN',
         totalQty: 500, receivedQty: 490,
         remaining: 70,   // 490 - (200+220) = 70
+        customerCode: null,
         shipments: {
-          [k('2025/05/10', 'SQ250510-001')]: 200,
-          [k('2025/05/30', 'SQ250630-001')]: 220,
-          [k('2025/06/10', 'SQ250610-001')]: null,
-          [k('2025/06/20', 'SQ250620-001')]: null,
+          [buildShipmentKey('2025/05/10', 'SQ250510-001')]: 200,
+          [buildShipmentKey('2025/05/30', 'SQ250630-001')]: 220,
+          [buildShipmentKey('2025/06/10', 'SQ250610-001')]: null,
+          [buildShipmentKey('2025/06/20', 'SQ250620-001')]: null,
         },
       },
       {
@@ -118,11 +121,12 @@ export const MOCK_PO_GROUPS: PoGroupData[] = [
         id: '4', wo: 'TC250502', patternCode: 'WL0305', imageUrl: null, sku: 'WL1-RD-BLK',
         totalQty: 1500, receivedQty: 1500,
         remaining: 300,  // 1500 - (600+300+300) = 300
+        customerCode: null,
         shipments: {
-          [k('2025/05/10', 'SQ250510-001')]: 600,
-          [k('2025/05/30', 'SQ250630-001')]: 300,
-          [k('2025/06/10', 'SQ250610-001')]: 300,
-          [k('2025/06/20', 'SQ250620-001')]: null,
+          [buildShipmentKey('2025/05/10', 'SQ250510-001')]: 600,
+          [buildShipmentKey('2025/05/30', 'SQ250630-001')]: 300,
+          [buildShipmentKey('2025/06/10', 'SQ250610-001')]: 300,
+          [buildShipmentKey('2025/06/20', 'SQ250620-001')]: null,
         },
       },
       {
@@ -130,11 +134,12 @@ export const MOCK_PO_GROUPS: PoGroupData[] = [
         id: '5', wo: null, patternCode: 'CB0201', imageUrl: null, sku: 'CB2-SM-TAN',
         totalQty: 800, receivedQty: 760,
         remaining: 100,  // 760 - (400+260) = 100
+        customerCode: null,
         shipments: {
-          [k('2025/05/10', 'SQ250510-001')]: 400,
-          [k('2025/05/30', 'SQ250630-001')]: 260,
-          [k('2025/06/10', 'SQ250610-001')]: null,
-          [k('2025/06/20', 'SQ250620-001')]: null,
+          [buildShipmentKey('2025/05/10', 'SQ250510-001')]: 400,
+          [buildShipmentKey('2025/05/30', 'SQ250630-001')]: 260,
+          [buildShipmentKey('2025/06/10', 'SQ250610-001')]: null,
+          [buildShipmentKey('2025/06/20', 'SQ250620-001')]: null,
         },
       },
     ],
@@ -147,19 +152,20 @@ export const MOCK_PO_GROUPS: PoGroupData[] = [
     receivedQty: 2640,  // 少60件
     remaining: 240,     // 2640 - 2400(shipped)
     columns: [
-      { shipmentId: 's5', date: '2025/05/12', shipmentNo: 'SQ250512-001', key: k('2025/05/12', 'SQ250512-001') },
-      { shipmentId: 's6', date: '2025/06/01', shipmentNo: 'SQ250601-001', key: k('2025/06/01', 'SQ250601-001') },
-      { shipmentId: 's7', date: '2025/06/13', shipmentNo: 'SQ250613-001', key: k('2025/06/13', 'SQ250613-001') },
+      { shipmentId: 's5', date: '2025/05/12', shipmentNo: 'SQ250512-001', key: buildShipmentKey('2025/05/12', 'SQ250512-001') },
+      { shipmentId: 's6', date: '2025/06/01', shipmentNo: 'SQ250601-001', key: buildShipmentKey('2025/06/01', 'SQ250601-001') },
+      { shipmentId: 's7', date: '2025/06/13', shipmentNo: 'SQ250613-001', key: buildShipmentKey('2025/06/13', 'SQ250613-001') },
     ],
     items: [
       {
         id: '6', wo: 'TC250503', patternCode: 'AP0201', imageUrl: null, sku: 'AP2-LG-BLK',
         totalQty: 1200, receivedQty: 1200,
         remaining: 150,  // 1200 - (500+350+200) = 150
+        customerCode: null,
         shipments: {
-          [k('2025/05/12', 'SQ250512-001')]: 500,
-          [k('2025/06/01', 'SQ250601-001')]: 350,
-          [k('2025/06/13', 'SQ250613-001')]: 200,
+          [buildShipmentKey('2025/05/12', 'SQ250512-001')]: 500,
+          [buildShipmentKey('2025/06/01', 'SQ250601-001')]: 350,
+          [buildShipmentKey('2025/06/13', 'SQ250613-001')]: 200,
         },
       },
       {
@@ -167,20 +173,22 @@ export const MOCK_PO_GROUPS: PoGroupData[] = [
         id: '7', wo: null, patternCode: 'AP0201', imageUrl: null, sku: 'AP2-LG-RED',
         totalQty: 600, receivedQty: 540,
         remaining: 0,    // 540 - (300+240) = 0
+        customerCode: null,
         shipments: {
-          [k('2025/05/12', 'SQ250512-001')]: 300,
-          [k('2025/06/01', 'SQ250601-001')]: 240,
-          [k('2025/06/13', 'SQ250613-001')]: null,
+          [buildShipmentKey('2025/05/12', 'SQ250512-001')]: 300,
+          [buildShipmentKey('2025/06/01', 'SQ250601-001')]: 240,
+          [buildShipmentKey('2025/06/13', 'SQ250613-001')]: null,
         },
       },
       {
         id: '8', wo: 'TC250504', patternCode: 'BT0301', imageUrl: null, sku: 'BT3-WD-BRN',
         totalQty: 900, receivedQty: 900,
         remaining: 90,   // 900 - (400+320+90) = 90
+        customerCode: null,
         shipments: {
-          [k('2025/05/12', 'SQ250512-001')]: 400,
-          [k('2025/06/01', 'SQ250601-001')]: 320,
-          [k('2025/06/13', 'SQ250613-001')]: 90,
+          [buildShipmentKey('2025/05/12', 'SQ250512-001')]: 400,
+          [buildShipmentKey('2025/06/01', 'SQ250601-001')]: 320,
+          [buildShipmentKey('2025/06/13', 'SQ250613-001')]: 90,
         },
       },
     ],
@@ -193,32 +201,34 @@ export const MOCK_PO_GROUPS: PoGroupData[] = [
     receivedQty: 1700,  // 入库 = 订单（正常）
     remaining: 70,
     columns: [
-      { shipmentId: 's8',  date: '2025/05/15', shipmentNo: 'SQ250515-001', key: k('2025/05/15', 'SQ250515-001') },
-      { shipmentId: 's9',  date: '2025/06/05', shipmentNo: 'SQ250605-001', key: k('2025/06/05', 'SQ250605-001') },
-      { shipmentId: 's10', date: '2025/06/18', shipmentNo: 'SQ250618-001', key: k('2025/06/18', 'SQ250618-001') },
-      { shipmentId: 's11', date: '2025/06/28', shipmentNo: 'SQ250628-001', key: k('2025/06/28', 'SQ250628-001') },
+      { shipmentId: 's8',  date: '2025/05/15', shipmentNo: 'SQ250515-001', key: buildShipmentKey('2025/05/15', 'SQ250515-001') },
+      { shipmentId: 's9',  date: '2025/06/05', shipmentNo: 'SQ250605-001', key: buildShipmentKey('2025/06/05', 'SQ250605-001') },
+      { shipmentId: 's10', date: '2025/06/18', shipmentNo: 'SQ250618-001', key: buildShipmentKey('2025/06/18', 'SQ250618-001') },
+      { shipmentId: 's11', date: '2025/06/28', shipmentNo: 'SQ250628-001', key: buildShipmentKey('2025/06/28', 'SQ250628-001') },
     ],
     items: [
       {
         id: '9', wo: 'TC250505', patternCode: 'CW0401', imageUrl: null, sku: 'CW4-FL-BLK',
         totalQty: 1000, receivedQty: 1000,
         remaining: 0,    // 1000 - (400+300+200+100) = 0
+        customerCode: null,
         shipments: {
-          [k('2025/05/15', 'SQ250515-001')]: 400,
-          [k('2025/06/05', 'SQ250605-001')]: 300,
-          [k('2025/06/18', 'SQ250618-001')]: 200,
-          [k('2025/06/28', 'SQ250628-001')]: 100,
+          [buildShipmentKey('2025/05/15', 'SQ250515-001')]: 400,
+          [buildShipmentKey('2025/06/05', 'SQ250605-001')]: 300,
+          [buildShipmentKey('2025/06/18', 'SQ250618-001')]: 200,
+          [buildShipmentKey('2025/06/28', 'SQ250628-001')]: 100,
         },
       },
       {
         id: '10', wo: null, patternCode: 'CW0401', imageUrl: null, sku: 'CW4-FL-BRN',
         totalQty: 700, receivedQty: 700,
         remaining: 70,   // 700 - (300+250+80) = 70
+        customerCode: null,
         shipments: {
-          [k('2025/05/15', 'SQ250515-001')]: 300,
-          [k('2025/06/05', 'SQ250605-001')]: 250,
-          [k('2025/06/18', 'SQ250618-001')]: 80,
-          [k('2025/06/28', 'SQ250628-001')]: null,
+          [buildShipmentKey('2025/05/15', 'SQ250515-001')]: 300,
+          [buildShipmentKey('2025/06/05', 'SQ250605-001')]: 250,
+          [buildShipmentKey('2025/06/18', 'SQ250618-001')]: 80,
+          [buildShipmentKey('2025/06/28', 'SQ250628-001')]: null,
         },
       },
     ],

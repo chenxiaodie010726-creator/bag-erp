@@ -25,6 +25,7 @@ const NAV_GROUPS: ParentNavGroup[] = [
     icon: '📋',
     children: [
       { label: '订单总览', href: '/orders' },
+      { label: '未录入', href: '/unregistered' },
     ],
   },
   {
@@ -32,12 +33,14 @@ const NAV_GROUPS: ParentNavGroup[] = [
     icon: '🛍️',
     children: [
       { label: '产品列表', href: '/products' },
+      { label: '套装列表', href: '/sets' },
     ],
   },
   {
     label: '出入库管理',
     icon: '📦',
     children: [
+      { label: '入库管理', href: '/inbound' },
       { label: '订单库存', href: '/inventory' },
     ],
   },

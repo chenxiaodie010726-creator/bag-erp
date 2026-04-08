@@ -57,7 +57,8 @@ export default function PoGroup({ data, selectedIds, onToggleItem, onToggleGroup
   const [prodMetaOpen, setProdMetaOpen] = useState(false);
 
   const itemIds = data.items.map((i) => i.id);
-  const allChecked = data.items.length > 0 && data.items.every((i) => selectedIds.has(i.id));
+  const allChecked   = data.items.length > 0 && data.items.every((i) => selectedIds.has(i.id));
+  const someChecked  = !allChecked && data.items.some((i) => selectedIds.has(i.id));
 
   function toggleSelectAll() {
     onToggleGroupAll(itemIds, !allChecked);
@@ -174,6 +175,7 @@ export default function PoGroup({ data, selectedIds, onToggleItem, onToggleGroup
                   <th style={stickyStyle('checkbox', true)} className="px-2 py-3 text-center">
                     <input
                       type="checkbox"
+                      ref={(el) => { if (el) el.indeterminate = someChecked; }}
                       checked={allChecked}
                       onChange={toggleSelectAll}
                       className="w-3.5 h-3.5 cursor-pointer"
@@ -238,6 +240,8 @@ export default function PoGroup({ data, selectedIds, onToggleItem, onToggleGroup
                   const rowBg = isSelected ? '#eff6ff' : rowIndex % 2 === 0 ? '#ffffff' : '#fafafa';
                   const metaBg = isSelected ? '#eff6ff' : rowIndex % 2 === 0 ? '#fafafa' : '#f3f4f6';
 
+                  const variance = item.totalQty - item.receivedQty;
+
                   return (
                     <tr
                       key={item.id}
@@ -280,22 +284,17 @@ export default function PoGroup({ data, selectedIds, onToggleItem, onToggleGroup
                         {item.receivedQty.toLocaleString()}
                       </td>
 
-                      {(() => {
-                        const variance = item.totalQty - item.receivedQty;
-                        return (
-                          <td
-                            style={{ ...stickyStyle('variance'), background: rowBg }}
-                            className={`px-3 py-3 text-left text-sm ${qtyColSep}`}
-                          >
-                            {variance === 0
-                              ? <span className="text-gray-300">—</span>
-                              : variance > 0
-                                ? <span className="font-semibold text-orange-500">▼ {variance.toLocaleString()}</span>
-                                : <span className="font-semibold text-blue-500">▲ {Math.abs(variance).toLocaleString()}</span>
-                            }
-                          </td>
-                        );
-                      })()}
+                      <td
+                        style={{ ...stickyStyle('variance'), background: rowBg }}
+                        className={`px-3 py-3 text-left text-sm ${qtyColSep}`}
+                      >
+                        {variance === 0
+                          ? <span className="text-gray-300">—</span>
+                          : variance > 0
+                            ? <span className="font-semibold text-orange-500">▼ {variance.toLocaleString()}</span>
+                            : <span className="font-semibold text-blue-500">▲ {Math.abs(variance).toLocaleString()}</span>
+                        }
+                      </td>
 
                       <td style={{ ...lastFixedStyle(), background: rowBg }} className={`px-3 py-3 text-left font-medium ${remainingOutboundSep}`}>
                         {item.remaining < 0 ? (
