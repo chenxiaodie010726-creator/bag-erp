@@ -313,3 +313,64 @@ export interface PoShipmentGroup {
   }>;
   items: SkuShipmentProgress[];
 }
+
+// ============================================================
+// 装箱单体系：装箱单 → 装箱明细
+// ============================================================
+
+/** 装箱单状态 */
+export type PackingListStatus = 'draft' | 'confirmed' | 'applied';
+
+export const PACKING_LIST_STATUS_MAP: Record<PackingListStatus, string> = {
+  draft: '草稿',
+  confirmed: '已确认',
+  applied: '已应用',
+};
+
+/** 装箱单主表 */
+export interface PackingList {
+  id: string;
+  packing_list_no: string;          // 装箱单号，如 PL250510-001
+  po_number: string;                 // 关联客户PO号
+  /** 客户出库号（inbound#），与出货进度中的客户出库单号一致，如 SQ250510-001 */
+  shipment_number: string | null;
+  shipment_date: string | null;      // 出货日期
+  status: PackingListStatus;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  /** 修改 PO 导入的 SKU/单价 的审计记录 */
+  default_change_log?: PackingListDefaultChangeEntry[];
+  // 前端关联展示
+  items?: PackingListItem[];
+}
+
+/** 装箱单：修改默认值（SKU/单价）记录 */
+export interface PackingListDefaultChangeEntry {
+  id: string;
+  at: string;
+  operator: string;
+  item_id: string;
+  message: string;
+}
+
+/** 装箱单明细 */
+export interface PackingListItem {
+  id: string;
+  packing_list_id: string;
+  sku: string;                       // SKU编码（客户款号）
+  /** 从 PO 导入时的参考 SKU；非空则 SKU/单价需通过「修改默认值」编辑 */
+  ref_sku_from_po?: string | null;
+  /** 从订单明细带入的参考单价 */
+  ref_unit_price_from_po?: number | null;
+  carton_qty: number;                // 箱数（混装箱的非首行为0）
+  pcs_per_carton: number;            // 每箱数量
+  unit_price: number;                // 单价
+  gross_weight_per_carton: number;   // 每箱毛重(kg)
+  product_weight: number;            // 产品单重(kg)
+  carton_size: string;               // 纸箱尺寸，如 "55*48*40" (cm)
+  outer_carton_size: string | null;  // 外箱尺寸（可选）
+  mixed_group: string | null;        // 混装组标记（A/B/C...），null表示非混装
+  sort_order: number;
+  notes: string | null;
+}

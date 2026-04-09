@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useAuth } from '@/components/auth/AuthProvider';
 import type { ProductListItem } from './mockData';
 import ColorDots from './ColorDots';
 import SkuSubTable from './SkuSubTable';
@@ -68,6 +69,7 @@ export default function ProductTable({
   onEditProduct,
 }: ProductTableProps) {
   const router = useRouter();
+  const { showPrice } = useAuth();
   const allChecked = data.length > 0 && data.every((p) => selectedIds.has(p.id));
   const someChecked = data.some((p) => selectedIds.has(p.id));
 
@@ -142,12 +144,16 @@ export default function ProductTable({
               产品名称 <SortArrow field="name" sortField={sortField} sortDir={sortDir} />
             </th>
             <th className={thCls}>颜色</th>
-            <th className={`${thCls} ${sortableCls} text-right`} onClick={() => onSort('bulkPrice')}>
-              大货价 <SortArrow field="bulkPrice" sortField={sortField} sortDir={sortDir} />
-            </th>
-            <th className={`${thCls} ${sortableCls} text-right`} onClick={() => onSort('dropshipPrice')}>
-              一件代发价 <SortArrow field="dropshipPrice" sortField={sortField} sortDir={sortDir} />
-            </th>
+            {showPrice && (
+              <th className={`${thCls} ${sortableCls} text-right`} onClick={() => onSort('bulkPrice')}>
+                大货价 <SortArrow field="bulkPrice" sortField={sortField} sortDir={sortDir} />
+              </th>
+            )}
+            {showPrice && (
+              <th className={`${thCls} ${sortableCls} text-right`} onClick={() => onSort('dropshipPrice')}>
+                一件代发价 <SortArrow field="dropshipPrice" sortField={sortField} sortDir={sortDir} />
+              </th>
+            )}
             <th className={thCls}>采购币种</th>
             <th className={thCls}>包装重量</th>
             <th className={thCls}>包装尺寸</th>
@@ -162,7 +168,7 @@ export default function ProductTable({
         <tbody>
           {data.length === 0 ? (
             <tr>
-              <td colSpan={13} className="py-16 text-center text-gray-400">
+              <td colSpan={showPrice ? 13 : 11} className="py-16 text-center text-gray-400">
                 <div className="text-4xl mb-3">📦</div>
                 <p className="text-sm">没有符合条件的产品</p>
               </td>
@@ -271,14 +277,18 @@ export default function ProductTable({
                     </td>
 
                     {/* 大货价 */}
-                    <td className={`${tdCls} text-right font-mono`}>
-                      ${product.bulkPrice.toFixed(2)}
-                    </td>
+                    {showPrice && (
+                      <td className={`${tdCls} text-right font-mono`}>
+                        ${product.bulkPrice.toFixed(2)}
+                      </td>
+                    )}
 
                     {/* 一件代发价 */}
-                    <td className={`${tdCls} text-right font-mono`}>
-                      ${product.dropshipPrice.toFixed(2)}
-                    </td>
+                    {showPrice && (
+                      <td className={`${tdCls} text-right font-mono`}>
+                        ${product.dropshipPrice.toFixed(2)}
+                      </td>
+                    )}
 
                     {/* 采购币种 */}
                     <td className={tdCls}>
@@ -336,7 +346,7 @@ export default function ProductTable({
                   /* === 展开的 SKU 子表 === */
                       isExpanded && (
                     <tr key={`${product.id}-expanded`}>
-                      <td colSpan={13} className="p-0">
+                      <td colSpan={showPrice ? 13 : 11} className="p-0">
                             <SkuSubTable
                               productId={product.id}
                               skus={product.skus}

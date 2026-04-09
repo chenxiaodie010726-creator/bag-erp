@@ -6,7 +6,7 @@
 
 import { useState } from 'react';
 import type { SetSkuItem } from './mockData';
-import { COLOR_MAP } from './mockData';
+import { COLOR_MAP, COLOR_NAME_MAP, COLOR_NAME_ZH_MAP } from './mockData';
 
 interface SetSkuSubTableProps {
   setId: string;
@@ -18,20 +18,21 @@ interface SetSkuSubTableProps {
   onUpdateSkus?: (setId: string, skus: SetSkuItem[]) => void;
 }
 
-const LIGHT_PRESET = new Set(['WHT', 'CRM', 'LPK', 'LBL', 'BGE']);
-
-function resolveHex(code: string): string {
-  return COLOR_MAP[code] ?? (code.startsWith('#') ? code : '#9ca3af');
-}
-function isLight(code: string): boolean {
-  if (LIGHT_PRESET.has(code)) return true;
-  if (code.startsWith('#')) {
-    const r = parseInt(code.slice(1, 3), 16);
-    const g = parseInt(code.slice(3, 5), 16);
-    const b = parseInt(code.slice(5, 7), 16);
+/** 与 products/SkuSubTable 一致：色块边框 + 英文全名 */
+const LIGHT_PRESET_SKU = new Set(['WHT', 'CRM', 'LPK', 'LBL', 'BGE']);
+function isLightHexSku(hex: string): boolean {
+  try {
+    const c = hex.replace('#', '');
+    const r = parseInt(c.substring(0, 2), 16);
+    const g = parseInt(c.substring(2, 4), 16);
+    const b = parseInt(c.substring(4, 6), 16);
     return (r * 299 + g * 587 + b * 114) / 1000 > 200;
+  } catch {
+    return false;
   }
-  return false;
+}
+function resolveSkuHex(colorCode: string): string {
+  return COLOR_MAP[colorCode] ?? (colorCode.startsWith('#') ? colorCode : '#9ca3af');
 }
 
 export default function SetSkuSubTable({
@@ -114,13 +115,13 @@ export default function SetSkuSubTable({
                   </th>
                   <th className={`${thCls} w-10`}>图</th>
                   <th className={thCls}>SKU</th>
+                  <th className={thCls}>Color</th>
                   <th className={thCls}>颜色</th>
-                  <th className={thCls}>颜色中文</th>
                   <th className={`${thCls} text-right`}>库存</th>
                   <th className={`${thCls} text-right`}>大货价</th>
                   <th className={`${thCls} text-right`}>一件代发价</th>
                   <th className={thCls}>状态</th>
-                  <th className={thCls}>更新时间</th>
+                  <th className={thCls}>更新时间 ↕</th>
                   <th className={thCls}>操作</th>
                 </tr>
               </thead>
@@ -133,8 +134,10 @@ export default function SetSkuSubTable({
                   </tr>
                 ) : (
                   skus.map((sku) => {
-                    const hex = resolveHex(sku.colorCode);
-                    const light = isLight(sku.colorCode);
+                    const hex = resolveSkuHex(sku.colorCode);
+                    const colorLabelEn = COLOR_NAME_MAP[sku.colorCode] ?? sku.colorCode;
+                    const colorLabelMono = sku.colorCode.startsWith('#');
+                    const isLight = LIGHT_PRESET_SKU.has(sku.colorCode) || isLightHexSku(hex);
                     const isChecked = selectedSkuIds.has(sku.id);
 
                     return (
@@ -155,15 +158,18 @@ export default function SetSkuSubTable({
                           />
                         </td>
 
-                        {/* 颜色色块（作为图 */}
+                        {/* 图（与产品列表 SkuSubTable 一致：色底 + 图标） */}
                         <td className={`${tdCls} w-10`}>
-                          <span
-                            className="inline-block w-8 h-8 rounded-md"
+                          <div
+                            className="w-9 h-9 rounded-md flex items-center justify-center text-white text-xs shrink-0"
                             style={{
                               backgroundColor: hex,
-                              border: light ? '1px solid #d1d5db' : 'none',
+                              border: isLight ? '1px solid #d1d5db' : 'none',
+                              color: isLight ? '#666' : '#fff',
                             }}
-                          />
+                          >
+                            👜
+                          </div>
                         </td>
 
                         {/* SKU 编号 */}
@@ -180,14 +186,33 @@ export default function SetSkuSubTable({
                           </div>
                         </td>
 
-                        {/* 颜色 */}
+                        {/* Color：圆点色块 + 英文全名（不展示 BLK 等缩写） */}
                         <td className={tdCls}>
-                          <span className="text-xs text-gray-600">{sku.colorCode}</span>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="inline-block w-4 h-4 rounded-full shrink-0"
+                              style={{
+                                backgroundColor: hex,
+                                border: isLight ? '1px solid #d1d5db' : 'none',
+                              }}
+                            />
+                            <span
+                              className={
+                                colorLabelMono
+                                  ? 'font-mono text-xs text-gray-600'
+                                  : 'text-sm text-gray-700'
+                              }
+                            >
+                              {colorLabelEn}
+                            </span>
+                          </div>
                         </td>
 
-                        {/* 颜色中文 */}
+                        {/* 颜色（中文名） */}
                         <td className={tdCls}>
-                          <span className="text-xs text-gray-500">{sku.colorNameZh ?? '—'}</span>
+                          <span className="text-sm text-gray-700">
+                            {sku.colorNameZh ?? COLOR_NAME_ZH_MAP[sku.colorCode] ?? '—'}
+                          </span>
                         </td>
 
                         {/* 库存 */}

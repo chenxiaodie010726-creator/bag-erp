@@ -13,24 +13,19 @@ import { MOCK_PO_GROUPS } from './_components/mockData';
 import type { PoGroupData } from './_components/mockData';
 import { exportInventoryToExcel, filterPoGroupsBySkuIds } from '@/lib/excelUtils';
 import { poMatchesFilter } from '@/lib/poNumber';
+import { loadInventoryFromStorage } from '@/lib/inventoryStorage';
+import { STORAGE_KEYS } from '@/lib/storageKeys';
 
 export default function InventoryPage() {
 
   /* ===== 数据源（初始使用模拟数据，导入后替换并持久化到 localStorage） ===== */
   const [poGroups, setPoGroups] = useState<PoGroupData[]>(MOCK_PO_GROUPS);
 
-  /* 页面加载时，从 localStorage 恢复上次导入的数据（如有） */
+  /* 页面加载时，从 localStorage 恢复（并剔除遗留演示 PO） */
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem('cf_erp_inventory');
-      if (stored) {
-        const parsed: PoGroupData[] = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setPoGroups(parsed);
-        }
-      }
-    } catch {
-      /* localStorage 读取失败时静默降级到模拟数据，不影响使用 */
+    const parsed = loadInventoryFromStorage();
+    if (parsed.length > 0) {
+      setPoGroups(parsed);
     }
   }, []);
 
@@ -47,6 +42,8 @@ export default function InventoryPage() {
   const [filterWo, setFilterWo] = useState('');               // 生产订单号关键词
   const [filterShipped, setFilterShipped] = useState('全部'); // 出货状态
   const [filterStock, setFilterStock] = useState('全部');     // 库存状态
+  /** 库存动态列「客户出库号」是否已填 */
+  const [filterOutboundNo, setFilterOutboundNo] = useState('全部');
 
   /* ===== 表格行勾选（用于「导出选中」） ===== */
   const [selectedSkuIds, setSelectedSkuIds] = useState<Set<string>>(() => new Set());
@@ -91,7 +88,7 @@ export default function InventoryPage() {
     handleReset();
     try {
       /* 将导入数据存入 localStorage，刷新后不丢失 */
-      localStorage.setItem('cf_erp_inventory', JSON.stringify(data));
+      localStorage.setItem(STORAGE_KEYS.INVENTORY, JSON.stringify(data));
     } catch {
       /* 存储空间不足时静默忽略，数据仍在内存中可用 */
     }
@@ -106,6 +103,15 @@ export default function InventoryPage() {
     return poGroups
       .filter((po) => {
         if (filterPos.length > 0 && !filterPos.some((line) => poMatchesFilter(po.poNumber, line))) return false;
+
+        if (filterOutboundNo === '存在未填') {
+          if (!po.columns.some((c) => !c.shipmentNo?.trim())) return false;
+        }
+        if (filterOutboundNo === '均已填写') {
+          if (po.columns.length === 0) return false;
+          if (!po.columns.every((c) => c.shipmentNo?.trim())) return false;
+        }
+
         return true;
       })
       .map((po) => {
@@ -137,7 +143,7 @@ export default function InventoryPage() {
         return { ...po, items: filteredItems };
       })
       .filter((po) => po.items.length > 0);
-  }, [poGroups, filterPos, filterSkus, filterPatternCode, filterWo, filterShipped, filterStock]);
+  }, [poGroups, filterPos, filterSkus, filterPatternCode, filterWo, filterShipped, filterStock, filterOutboundNo]);
 
   /* 筛选结果变化时，去掉已不可见行的勾选，避免导出幽灵 id */
   useEffect(() => {
@@ -167,13 +173,14 @@ export default function InventoryPage() {
     setFilterWo('');
     setFilterShipped('全部');
     setFilterStock('全部');
+    setFilterOutboundNo('全部');
     setSelectedSkuIds(new Set());
   }
 
   /* 清除导入数据，恢复模拟数据 */
   function handleClearImport() {
     if (!confirm('确认清除已导入数据，恢复为演示数据吗？')) return;
-    try { localStorage.removeItem('cf_erp_inventory'); } catch { /* ignore */ }
+    try { localStorage.removeItem(STORAGE_KEYS.INVENTORY); } catch { /* ignore */ }
     setPoGroups(MOCK_PO_GROUPS);
     handleReset();
   }
@@ -315,7 +322,7 @@ export default function InventoryPage() {
           </div>
 
           {/* 第二行：辅助筛选项 */}
-          <div className="grid grid-cols-5 gap-3 items-end">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
             <FilterItem label="下单日期">
               <div className="flex items-center gap-1">
                 <input type="date" className={INPUT_CLS} />
@@ -350,6 +357,23 @@ export default function InventoryPage() {
                 <option>全部</option>
                 <option>有库存</option>
                 <option>无库存</option>
+              </select>
+            </FilterItem>
+            <FilterItem
+              label={
+                <span title="按出货进度动态列中的客户出库号（inbound#）是否已填写筛选 PO">
+                  客户出库号
+                </span>
+              }
+            >
+              <select
+                value={filterOutboundNo}
+                onChange={(e) => setFilterOutboundNo(e.target.value)}
+                className={INPUT_CLS}
+              >
+                <option value="全部">全部</option>
+                <option value="存在未填">存在未填写</option>
+                <option value="均已填写">均已填写</option>
               </select>
             </FilterItem>
             <div className="flex justify-end items-end">

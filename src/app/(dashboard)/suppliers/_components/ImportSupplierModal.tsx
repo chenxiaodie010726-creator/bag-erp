@@ -1,78 +1,116 @@
 'use client';
 
 /* ============================================================
- * 客户订单导入弹窗
+ * 供应商导入弹窗
  * 功能：上传 Excel → 解析 → 预览 → 确认导入
- * 格式：列顺序 PO号 | 订单金额(USD) | PO数量 | 分批 | 订单状态 | 订单日期 | 客户名称
+ * 列：供应商名称 | 公司全称 | 供应商类型 | 供应商分类（随类型：物料/工艺 各自一套） | 默认账期 | 微信号 | 联系群名称 | 群人数
  * ============================================================ */
 
 import { useState, useRef, useCallback } from 'react';
 import * as XLSX from 'xlsx';
-import type { OrderItem, OrderStatus } from './mockData';
+import type { SupplierItem, SupplierType, SupplierCategory } from './mockData';
+import {
+  SUPPLIER_CATEGORIES_MATERIAL,
+  SUPPLIER_CATEGORIES_PROCESS,
+  normalizePaymentTerm,
+  resolveImportedCategory,
+} from './mockData';
 
-interface ImportOrderModalProps {
+interface ImportSupplierModalProps {
   open: boolean;
+  /** 物料供应商分类（与列表页一致，含自定义） */
+  materialCategories?: SupplierCategory[];
+  processCategories?: SupplierCategory[];
   onClose: () => void;
-  onConfirm: (data: OrderItem[]) => void;
+  onConfirm: (data: SupplierItem[]) => void;
 }
 
 type Stage = 'idle' | 'parsing' | 'done';
 
 interface ParseResult {
-  data: OrderItem[];
+  data: SupplierItem[];
   errors: string[];
 }
 
-const VALID_STATUSES: OrderStatus[] = ['已确认', '待确认', '部分发货', '已发货', '已取消'];
+const VALID_TYPES: SupplierType[] = ['物料供应商', '工艺供应商'];
 
-async function parseOrdersExcel(file: File): Promise<ParseResult> {
+async function parseSuppliersExcel(
+  file: File,
+  materialCategories: readonly string[],
+  processCategories: readonly string[],
+): Promise<ParseResult> {
   const buffer = await file.arrayBuffer();
   const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' });
 
-  const data: OrderItem[] = [];
+  const data: SupplierItem[] = [];
   const errors: string[] = [];
 
   rows.forEach((row, idx) => {
-    const rowNum = idx + 2; // header is row 1
-    const poNumber = String(row['PO号'] ?? '').trim();
-    if (!poNumber) {
-      errors.push(`第 ${rowNum} 行：PO号为空，已跳过`);
+    const rowNum = idx + 2;
+    const name = String(row['供应商名称'] ?? '').trim();
+    if (!name) {
+      errors.push(`第 ${rowNum} 行：供应商名称为空，已跳过`);
       return;
     }
 
-    const rawStatus = String(row['订单状态'] ?? '').trim() as OrderStatus;
-    const status: OrderStatus = VALID_STATUSES.includes(rawStatus) ? rawStatus : '待确认';
+    const fullName = String(row['公司全称'] ?? '').trim() || name;
 
-    const rawDate = row['订单日期'];
-    let orderDate = '';
-    if (rawDate instanceof Date) {
-      orderDate = rawDate.toISOString().slice(0, 10);
-    } else if (typeof rawDate === 'string' && rawDate) {
-      orderDate = rawDate.replace(/\//g, '-').slice(0, 10);
-    } else if (typeof rawDate === 'number') {
-      const d = XLSX.SSF.parse_date_code(rawDate);
-      orderDate = `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
-    }
+    const rawType = String(row['供应商类型'] ?? '物料供应商').trim() as SupplierType;
+    const type: SupplierType = VALID_TYPES.includes(rawType) ? rawType : '物料供应商';
 
-    const batchRaw = String(row['分批'] ?? '1').replace(/批/, '');
+    const rawCategory = String(row['供应商分类'] ?? '').trim();
+    const category = resolveImportedCategory(rawCategory, type, materialCategories, processCategories);
+
+    const rawTerm = String(row['默认账期'] ?? '').trim();
+    const paymentTerm = rawTerm ? normalizePaymentTerm(rawTerm) : '30 天';
+    const wechatId = String(row['微信号'] ?? '').trim();
+    const contactGroup = String(row['联系群名称'] ?? '').trim();
+    const groupMembers = parseInt(String(row['群人数'] ?? '0'), 10) || 0;
+
     data.push({
       id: `imported_${idx}_${Date.now()}`,
-      poNumber,
-      amount: Number(row['订单金额(USD)'] ?? 0),
-      poQty: Number(row['PO数量'] ?? 0),
-      batches: Math.max(1, parseInt(batchRaw, 10) || 1),
-      status,
-      orderDate,
-      customerName: String(row['客户名称'] ?? '').trim(),
+      name,
+      fullName,
+      type,
+      category,
+      paymentTerm,
+      wechatBound: !!wechatId,
+      contactGroup,
+      groupMembers,
+      wechatId,
+      hasLicense: false,
+      status: '启用',
+      createdAt: new Date().toISOString().slice(0, 10),
     });
   });
 
   return { data, errors };
 }
 
-export default function ImportOrderModal({ open, onClose, onConfirm }: ImportOrderModalProps) {
+export function downloadSupplierTemplate() {
+  const ws = XLSX.utils.aoa_to_sheet([
+    ['供应商名称', '公司全称', '供应商类型', '供应商分类', '默认账期', '微信号', '联系群名称', '群人数'],
+    ['华信贸易', '深圳市华信贸易有限公司', '物料供应商', '面料', '45 天', 'wx_huaxin2024', '华信贸易采购群', 35],
+    ['德力印花', '佛山市德力印花工艺有限公司', '工艺供应商', '印花', '3 个月', 'dl_yinhua', '德力印花合作群', 15],
+  ]);
+  ws['!cols'] = [
+    { wch: 14 }, { wch: 28 }, { wch: 12 }, { wch: 10 },
+    { wch: 10 }, { wch: 16 }, { wch: 20 }, { wch: 8 },
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '供应商导入模板');
+  XLSX.writeFile(wb, '供应商导入模板.xlsx');
+}
+
+export default function ImportSupplierModal({
+  open,
+  onClose,
+  onConfirm,
+  materialCategories = [...SUPPLIER_CATEGORIES_MATERIAL],
+  processCategories = [...SUPPLIER_CATEGORIES_PROCESS],
+}: ImportSupplierModalProps) {
   const [stage, setStage] = useState<Stage>('idle');
   const [isDragging, setIsDragging] = useState(false);
   const [fileName, setFileName] = useState('');
@@ -88,7 +126,7 @@ export default function ImportOrderModal({ open, onClose, onConfirm }: ImportOrd
     setFileName(file.name);
     setStage('parsing');
     setResult(null);
-    const parsed = await parseOrdersExcel(file);
+    const parsed = await parseSuppliersExcel(file, materialCategories, processCategories);
     setResult(parsed);
     setStage('done');
   }
@@ -122,18 +160,6 @@ export default function ImportOrderModal({ open, onClose, onConfirm }: ImportOrd
     onClose();
   }
 
-  function downloadTemplate() {
-    const ws = XLSX.utils.aoa_to_sheet([
-      ['PO号', '订单金额(USD)', 'PO数量', '分批', '订单状态', '订单日期', '客户名称'],
-      ['PO#031826', 32785, 32, '2批', '已确认', '2024-04-10', 'ABC Trading Co.'],
-      ['PO#031825', 28450, 28, '1批', '待确认', '2024-04-08', 'Global Bags Ltd.'],
-    ]);
-    ws['!cols'] = [{ wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 20 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '订单导入模板');
-    XLSX.writeFile(wb, '订单导入模板.xlsx');
-  }
-
   if (!open) return null;
 
   return (
@@ -142,16 +168,12 @@ export default function ImportOrderModal({ open, onClose, onConfirm }: ImportOrd
       onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
     >
       <div className="w-full max-w-lg bg-white rounded-xl shadow-2xl overflow-hidden">
-
-        {/* 标题栏 */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <h2 className="text-base font-semibold text-gray-800">导入客户订单</h2>
+          <h2 className="text-base font-semibold text-gray-800">导入供应商</h2>
           <button onClick={handleClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
         </div>
 
         <div className="px-6 py-5 space-y-4">
-
-          {/* 上传区域 */}
           {(stage === 'idle' || stage === 'parsing') && (
             <div
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -189,7 +211,6 @@ export default function ImportOrderModal({ open, onClose, onConfirm }: ImportOrd
             className="hidden"
           />
 
-          {/* 解析结果 */}
           {stage === 'done' && result && (
             <div className="space-y-3">
               {fileName && (
@@ -213,21 +234,27 @@ export default function ImportOrderModal({ open, onClose, onConfirm }: ImportOrd
                   <p className="text-xs font-semibold text-green-700 mb-2">✓ 解析成功，预览数据：</p>
                   <div className="flex gap-6 text-sm mb-2">
                     <div>
-                      <span className="text-gray-500 text-xs">订单数</span>
+                      <span className="text-gray-500 text-xs">供应商数</span>
                       <p className="font-bold text-gray-800 text-lg">{result.data.length}</p>
                     </div>
                     <div>
-                      <span className="text-gray-500 text-xs">总金额 (USD)</span>
+                      <span className="text-gray-500 text-xs">物料供应商</span>
                       <p className="font-bold text-gray-800 text-lg">
-                        ${result.data.reduce((s, o) => s + o.amount, 0).toLocaleString()}
+                        {result.data.filter((s) => s.type === '物料供应商').length}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-gray-500 text-xs">工艺供应商</span>
+                      <p className="font-bold text-gray-800 text-lg">
+                        {result.data.filter((s) => s.type === '工艺供应商').length}
                       </p>
                     </div>
                   </div>
                   <div className="space-y-1 max-h-24 overflow-y-auto">
-                    {result.data.slice(0, 5).map((o) => (
-                      <div key={o.id} className="flex items-center justify-between text-xs text-gray-600 py-0.5">
-                        <span className="font-medium">{o.poNumber}</span>
-                        <span>{o.customerName} · ${o.amount.toLocaleString()} · {o.status}</span>
+                    {result.data.slice(0, 5).map((s) => (
+                      <div key={s.id} className="flex items-center justify-between text-xs text-gray-600 py-0.5">
+                        <span className="font-medium">{s.name}</span>
+                        <span>{s.fullName} · {s.category} · {s.type}</span>
                       </div>
                     ))}
                     {result.data.length > 5 && (
@@ -252,11 +279,10 @@ export default function ImportOrderModal({ open, onClose, onConfirm }: ImportOrd
             </div>
           )}
 
-          {/* 模板下载 */}
           <div className="flex items-center justify-between text-xs text-gray-400 pt-1 border-t border-gray-100">
             <span>不确定格式？</span>
             <button
-              onClick={downloadTemplate}
+              onClick={downloadSupplierTemplate}
               className="text-blue-500 hover:text-blue-700 underline"
             >
               ↓ 下载导入模板
@@ -264,7 +290,6 @@ export default function ImportOrderModal({ open, onClose, onConfirm }: ImportOrd
           </div>
         </div>
 
-        {/* 底部按钮 */}
         <div className="flex items-center justify-end gap-3 px-6 py-4 bg-gray-50 border-t border-gray-200">
           <button
             onClick={handleClose}
@@ -285,7 +310,6 @@ export default function ImportOrderModal({ open, onClose, onConfirm }: ImportOrd
             确认导入{result && result.data.length > 0 ? ` (${result.data.length} 条)` : ''}
           </button>
         </div>
-
       </div>
     </div>
   );

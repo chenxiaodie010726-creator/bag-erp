@@ -1,12 +1,15 @@
 'use client';
 
 /* ============================================================
- * 侧边栏导航组件（可折叠二级菜单）
+ * 侧边栏导航组件（带权限过滤 + 退出登录）
  * ============================================================ */
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { useAuth } from '@/components/auth/AuthProvider';
+import { signOut } from '@/lib/auth';
+import { canAccess } from '@/lib/permissions';
 
 interface ChildNavItem {
   label: string;
@@ -30,10 +33,12 @@ const NAV_GROUPS: ParentNavGroup[] = [
   },
   {
     label: '产品管理',
-    icon: '🛍️',
+    icon: '👜️',
     children: [
       { label: '产品列表', href: '/products' },
-      { label: '套装列表', href: '/sets' },
+      { label: '颜色管理', href: '/colors' },
+      { label: '成本表管理', href: '/cost-sheets' },
+      { label: '套装管理', href: '/sets' },
     ],
   },
   {
@@ -42,6 +47,15 @@ const NAV_GROUPS: ParentNavGroup[] = [
     children: [
       { label: '入库管理', href: '/inbound' },
       { label: '订单库存', href: '/inventory' },
+      { label: '装箱单管理', href: '/packing-list' },
+    ],
+  },
+  {
+    label: '生产管理',
+    icon: '🔧',
+    children: [
+      { label: '生产单管理', href: '/production' },
+      { label: '生产进度', href: '/production-progress' },
     ],
   },
   {
@@ -49,13 +63,17 @@ const NAV_GROUPS: ParentNavGroup[] = [
     icon: '🏭',
     children: [
       { label: '供应商列表', href: '/suppliers' },
+      { label: '价格管理', href: '/prices' },
     ],
   },
   {
     label: '财务管理',
     icon: '💰',
     children: [
-      { label: '财务总览', href: '/finance' },
+      { label: '报销单', href: '/finance/reimbursement' },
+      { label: '物料/工艺账单', href: '/finance/material-supplier-bills' },
+      { label: '加工厂账单', href: '/finance/processing-plant-bills' },
+      { label: '日采购单', href: '/finance/daily-purchase' },
     ],
   },
   {
@@ -70,27 +88,45 @@ const NAV_GROUPS: ParentNavGroup[] = [
     icon: '⚙️',
     children: [
       { label: '基础设置', href: '/settings' },
+      { label: '账号管理', href: '/settings/accounts' },
     ],
   },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const { user, setUser } = useAuth();
 
-  /* 记录每个父级是否展开，默认将含有当前激活子项的父级展开 */
+  const role = user?.role ?? 'clerk';
+
+  /* 根据角色过滤导航：只显示有权限的菜单项 */
+  const filteredGroups = NAV_GROUPS
+    .map((group) => ({
+      ...group,
+      children: group.children.filter((child) => canAccess(role, child.href)),
+    }))
+    .filter((group) => group.children.length > 0);
+
+  /* 记录每个父级是否展开 */
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
-    NAV_GROUPS.forEach((group) => {
-      /* 如果当前路径属于该分组，则默认展开 */
+    filteredGroups.forEach((group) => {
       const hasActiveChild = group.children.some((c) => pathname.startsWith(c.href));
       initial[group.label] = hasActiveChild;
     });
     return initial;
   });
 
-  /* 切换某个父级的展开/折叠状态 */
   function toggleGroup(label: string) {
     setOpenGroups((prev) => ({ ...prev, [label]: !prev[label] }));
+  }
+
+  /* 退出登录 */
+  async function handleSignOut() {
+    await signOut();
+    setUser(null);
+    router.push('/login');
   }
 
   return (
@@ -103,14 +139,12 @@ export default function Sidebar() {
 
       {/* ===== 导航菜单 ===== */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {NAV_GROUPS.map((group) => {
+        {filteredGroups.map((group) => {
           const isOpen = !!openGroups[group.label];
           const isGroupActive = group.children.some((c) => pathname.startsWith(c.href));
 
           return (
             <div key={group.label}>
-
-              {/* ---- 父级按钮（点击折叠/展开） ---- */}
               <button
                 onClick={() => toggleGroup(group.label)}
                 className={[
@@ -124,7 +158,6 @@ export default function Sidebar() {
                   <span>{group.icon}</span>
                   <span className="font-medium">{group.label}</span>
                 </span>
-                {/* 折叠箭头：展开时朝下，折叠时朝右 */}
                 <span className={[
                   'text-xs text-gray-500 transition-transform duration-200',
                   isOpen ? 'rotate-90' : '',
@@ -133,7 +166,6 @@ export default function Sidebar() {
                 </span>
               </button>
 
-              {/* ---- 子级列表（展开时显示） ---- */}
               {isOpen && (
                 <div className="ml-3 mt-0.5 mb-1 border-l border-gray-700 pl-3 space-y-0.5">
                   {group.children.map((child) => {
@@ -155,15 +187,31 @@ export default function Sidebar() {
                   })}
                 </div>
               )}
-
             </div>
           );
         })}
       </nav>
 
-      {/* ===== 底部版本信息 ===== */}
-      <div className="px-5 py-4 border-t border-gray-700 text-xs text-gray-500">
-        CF Leather ERP v0.1
+      {/* ===== 底部用户信息 + 退出 ===== */}
+      <div className="px-4 py-4 border-t border-gray-700">
+        {user && (
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-col">
+              <span className="text-sm text-gray-200 font-medium">{user.name}</span>
+              <span className="text-xs text-gray-500">{user.department ?? user.role}</span>
+            </div>
+            <button
+              onClick={handleSignOut}
+              className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              title="退出登录"
+            >
+              退出
+            </button>
+          </div>
+        )}
+        <div className="text-xs text-gray-600">
+          晟砜皮具 ERP v0.1
+        </div>
       </div>
     </aside>
   );

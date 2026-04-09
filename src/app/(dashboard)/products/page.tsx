@@ -8,8 +8,9 @@
 
 'use client';
 
-import { useState, useMemo, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useMemo, useEffect, useRef, useCallback, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { guessColorCodeFromSku } from '@/lib/colorDisplay';
 import ProductTable from './_components/ProductTable';
 import Pagination from './_components/Pagination';
 import AddSkuModal from './_components/AddSkuModal';
@@ -20,8 +21,12 @@ import {
   CATEGORY_OPTIONS,
   STATUS_OPTIONS,
   COLOR_MAP,
+  COLOR_NAME_ZH_MAP,
 } from './_components/mockData';
 import type { ProductListItem, SkuItem } from './_components/mockData';
+import { SetsContent } from '../sets/page';
+import { useUndoManager, useUndoKeyboard } from '@/hooks/useUndoManager';
+import UndoToast from '@/components/UndoToast';
 
 const CURRENCY_SYMBOL_MAP: Record<string, string> = {
   USD: '$', CNY: '¥', EUR: '€', GBP: '£', JPY: '¥',
@@ -33,11 +38,77 @@ function saveToStorage(data: ProductListItem[]) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch { /* quota exceeded — silent */ }
 }
 
+type ProductTab = 'single' | 'set';
+
 export default function ProductsPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-gray-400 text-sm">加载中…</div>}>
+      <ProductsPageWrapper />
+    </Suspense>
+  );
+}
+
+function ProductsPageWrapper() {
+  const [activeTab, setActiveTab] = useState<ProductTab>('single');
+
+  return (
+    <div className="flex flex-col gap-2">
+      {/* ===== 页面标题 + Tab 切换 ===== */}
+      <div className="flex items-center justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            {([
+              { key: 'single' as ProductTab, label: '单品管理' },
+              { key: 'set' as ProductTab, label: '套装管理' },
+            ]).map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={[
+                  'text-base font-bold px-3 py-1.5 rounded-md border-2 transition-colors',
+                  activeTab === tab.key
+                    ? 'border-blue-500 text-blue-600 bg-blue-50'
+                    : 'border-transparent text-gray-400 hover:text-gray-600',
+                ].join(' ')}
+              >
+                {tab.label}
+              </button>
+            ))}
+            <span className="text-xs text-gray-400 hidden sm:inline border-l border-gray-200 pl-3 ml-0.5">
+              {activeTab === 'single'
+                ? '单品款式、SKU、成本与价格'
+                : '套装 SKU 与纸格款号'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* ===== Tab 内容 ===== */}
+      <div style={{ display: activeTab === 'single' ? 'block' : 'none' }}>
+        <ProductsPageContent />
+      </div>
+      <div style={{ display: activeTab === 'set' ? 'block' : 'none' }}>
+        <SetsContent showHeader={false} />
+      </div>
+    </div>
+  );
+}
+
+function ProductsPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  /** 从「未录入」点「录入」带入，用于新建产品弹窗预填并在创建后写入首条 SKU */
+  const [orderPrefillForCreate, setOrderPrefillForCreate] = useState<{
+    sku: string;
+    styleName: string;
+    colorName: string;
+    unitPrice: number;
+  } | null>(null);
 
   /* ===== 数据源（localStorage 持久化，刷新不丢失） ===== */
   const [products, setProductsRaw] = useState<ProductListItem[]>(MOCK_PRODUCTS);
+  const undo = useUndoManager<ProductListItem[]>();
 
   /* 加载时从 localStorage 恢复 */
   useEffect(() => {
@@ -59,6 +130,21 @@ export default function ProductsPage() {
     });
   }
 
+  /** Record current state before a mutation */
+  function pushUndo(description: string) {
+    undo.push(products, description);
+  }
+
+  const handleUndo = useCallback(() => {
+    const entry = undo.pop();
+    if (entry) {
+      setProductsRaw(entry.snapshot);
+      saveToStorage(entry.snapshot);
+    }
+  }, [undo]);
+
+  useUndoKeyboard(handleUndo, undo.canUndo);
+
   const isStoredData = typeof window !== 'undefined' && !!localStorage.getItem(STORAGE_KEY);
 
   function handleClearStorage() {
@@ -73,6 +159,21 @@ export default function ProductsPage() {
   const [addSkuModalProduct, setAddSkuModalProduct] = useState<ProductListItem | null>(null);
   const [editModalProduct, setEditModalProduct] = useState<ProductListItem | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (searchParams.get('fromOrder') !== '1') return;
+    const sku = searchParams.get('sku')?.trim();
+    if (!sku) return;
+    const up = Number(searchParams.get('unitPrice'));
+    setOrderPrefillForCreate({
+      sku,
+      styleName: searchParams.get('styleName') ?? '',
+      colorName: searchParams.get('colorName') ?? '',
+      unitPrice: Number.isFinite(up) ? up : 0,
+    });
+    setCreateModalOpen(true);
+    router.replace('/products', { scroll: false });
+  }, [searchParams, router]);
 
   /* ===== 批量编辑浮动面板 ===== */
   const [batchPanelOpen, setBatchPanelOpen] = useState(false);
@@ -145,6 +246,7 @@ export default function ProductsPage() {
     productId: string,
     payload: { skuCode: string; colorCode: string; colorNameZh: string; stock: number; bulkPrice: number; dropshipPrice: number; status: 'active' | 'discontinued' }
   ) {
+    pushUndo(`添加 SKU: ${payload.skuCode}`);
     setProducts((prev) =>
       prev.map((p) => {
         if (p.id !== productId) return p;
@@ -171,6 +273,7 @@ export default function ProductsPage() {
   function bulkDeleteSkus(productId: string, skuIds: string[]) {
     if (skuIds.length === 0) return;
     if (!confirm(`确认删除已选 ${skuIds.length} 个 SKU？`)) return;
+    pushUndo(`删除 ${skuIds.length} 个 SKU`);
     setProducts((prev) =>
       prev.map((p) => {
         if (p.id !== productId) return p;
@@ -183,6 +286,7 @@ export default function ProductsPage() {
 
   function bulkModifySkus(productId: string, skuIds: string[], oldText: string, newText: string) {
     if (skuIds.length === 0) return;
+    pushUndo(`批量修改 ${skuIds.length} 个 SKU 文本`);
     setProducts((prev) =>
       prev.map((p) => {
         if (p.id !== productId) return p;
@@ -209,6 +313,7 @@ export default function ProductsPage() {
   }
 
   function updateSku(productId: string, skuId: string, patch: Partial<SkuItem>) {
+    pushUndo('修改 SKU 信息');
     setProducts((prev) =>
       prev.map((p) => {
         if (p.id !== productId) return p;
@@ -220,6 +325,8 @@ export default function ProductsPage() {
   /* ===== 产品操作 ===== */
 
   function handleEditProductConfirm(productId: string, patch: EditProductPatch, syncSkuPrices: boolean) {
+    const p = products.find((x) => x.id === productId);
+    pushUndo(`编辑产品: ${p?.patternCode ?? productId}`);
     setProducts((prev) =>
       prev.map((p) => {
         if (p.id !== productId) return p;
@@ -245,6 +352,7 @@ export default function ProductsPage() {
     if (!target) return;
     const nextStatus: ProductListItem['status'] = target.status === 'active' ? 'discontinued' : 'active';
     if (!confirm(`确认将产品「${target.name}」${nextStatus === 'active' ? '启用' : '停用'}？`)) return;
+    pushUndo(`${nextStatus === 'active' ? '启用' : '停用'}产品: ${target.patternCode}`);
     setProducts((prev) =>
       prev.map((p) => {
         if (p.id !== productId) return p;
@@ -276,6 +384,7 @@ export default function ProductsPage() {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
     if (!confirm(`确认删除已选 ${ids.length} 个产品？此操作将同时删除其下所有 SKU。`)) return;
+    pushUndo(`删除 ${ids.length} 个产品`);
     setProducts((prev) => prev.filter((p) => !ids.includes(p.id)));
     setSelectedIds(new Set());
   }
@@ -289,6 +398,7 @@ export default function ProductsPage() {
     const bulkPrice = hasBulk ? Number(batchBulkPrice) : 0;
     const dropshipPrice = hasDrop ? Number(batchDropshipPrice) : 0;
     if ((hasBulk && !Number.isFinite(bulkPrice)) || (hasDrop && !Number.isFinite(dropshipPrice))) return;
+    pushUndo(`批量修改 ${ids.length} 个产品价格`);
     setProducts((prev) =>
       prev.map((p) => {
         if (!ids.includes(p.id)) return p;
@@ -397,7 +507,7 @@ export default function ProductsPage() {
   );
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3">
 
       {/* ===== 弹窗 ===== */}
       <AddSkuModal
@@ -416,49 +526,77 @@ export default function ProductsPage() {
       {/* 新建产品使用同一个弹窗，product=null 时展示空白表单 */}
       <CreateProductModal
         open={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
+        orderPrefill={orderPrefillForCreate}
+        onClose={() => {
+          setCreateModalOpen(false);
+          setOrderPrefillForCreate(null);
+        }}
         onConfirm={(product) => {
-          setProducts((prev) => [product, ...prev]);
+          const prefill = orderPrefillForCreate;
+          pushUndo(`新建产品: ${product.patternCode}`);
+          setProducts((prev) => {
+            let row = product;
+            if (prefill) {
+              const o = prefill;
+              const code = guessColorCodeFromSku(o.sku) ?? 'BLK';
+              const zh =
+                COLOR_NAME_ZH_MAP[code] ||
+                (o.colorName?.trim() ? o.colorName.trim() : undefined);
+              const sku: SkuItem = {
+                id: `${product.id}-sku-${Date.now()}`,
+                skuName: o.sku,
+                skuCode: o.sku,
+                colorCode: code,
+                colorNameZh: zh,
+                colorPhrase: o.colorName?.trim() || undefined,
+                stock: 0,
+                bulkPrice: product.bulkPrice,
+                dropshipPrice: product.dropshipPrice,
+                status: 'active',
+                updatedAt: new Date().toISOString().slice(0, 10).replace(/-/g, '/'),
+              };
+              const colors = product.colors.includes(code)
+                ? product.colors
+                : [...product.colors, code];
+              row = { ...product, skus: [sku], skuCount: 1, colors };
+            }
+            return [row, ...prev];
+          });
+          setOrderPrefillForCreate(null);
           setPage(1);
         }}
       />
 
-      {/* ===== 页面标题栏 ===== */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold text-gray-800">产品管理</h1>
-          <span className="text-sm text-gray-400">管理所有款式及SKU信息、成本与价格</span>
-          {isStoredData && (
+      {/* ===== 搜索 & 筛选区域（含导出/新建，避免顶部整行空白） ===== */}
+      <div className="bg-white border border-gray-200 rounded-lg p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3 pb-2 border-b border-gray-100">
+          <span className="text-sm font-medium text-gray-700">筛选条件</span>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {isStoredData && (
+              <button
+                onClick={handleClearStorage}
+                className="text-xs text-red-400 hover:text-red-600 border border-red-200 rounded px-2 py-0.5 transition-colors"
+                title="清除已保存的修改，恢复演示数据"
+              >
+                ✕ 清除保存
+              </button>
+            )}
             <button
-              onClick={handleClearStorage}
-              className="text-xs text-red-400 hover:text-red-600 border border-red-200 rounded px-2 py-0.5 transition-colors"
-              title="清除已保存的修改，恢复演示数据"
+              onClick={exportProducts}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 transition-colors text-gray-600"
             >
-              ✕ 清除保存
+              ↓ 导出
             </button>
-          )}
+            <button
+              onClick={() => setCreateModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-gray-900 text-white rounded-md hover:bg-gray-700 transition-colors font-medium"
+            >
+              + 新建产品
+            </button>
+          </div>
         </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={exportProducts}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 rounded-md hover:bg-gray-50 transition-colors text-gray-600"
-          >
-            ↓ 导出
-          </button>
-          <button
-            onClick={() => setCreateModalOpen(true)}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-gray-900 text-white rounded-md hover:bg-gray-700 transition-colors font-medium"
-          >
-            + 新建产品
-          </button>
-        </div>
-      </div>
-
-      {/* ===== 搜索 & 筛选区域 ===== */}
-      <div className="bg-white border border-gray-200 rounded-lg p-4">
-        <div className="flex items-start gap-4">
-          <div className="flex-1 max-w-md">
+        <div className="flex flex-wrap items-end gap-x-2 sm:gap-x-3 gap-y-2">
+          <div className="w-full sm:w-[min(100%,220px)] shrink-0">
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
               <input
@@ -466,76 +604,76 @@ export default function ProductsPage() {
                 placeholder="搜索款号、产品名称或 SKU"
                 value={searchText}
                 onChange={(e) => { setSearchText(e.target.value); setPage(1); }}
-                className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white"
+                className="w-full pl-9 pr-3 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white"
               />
             </div>
-            <p className="text-xs text-gray-400 mt-1">可搜索款号、产品名称或 SKU 编码</p>
+            <p className="text-[11px] text-gray-400 mt-0.5 leading-tight">款号 / 名称 / SKU</p>
           </div>
 
-          <div className="flex-1 max-w-md">
+          <div className="w-full sm:w-[min(100%,260px)] shrink-0">
             <textarea
-              placeholder="批量搜索（款号/SKU，支持逗号或换行）"
+              placeholder="批量搜索（款号/SKU，逗号或换行）"
               value={batchSearchText}
               onChange={(e) => { setBatchSearchText(e.target.value); setPage(1); }}
               rows={2}
-              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white resize-none"
+              className="w-full px-2.5 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white resize-none leading-snug"
             />
-            <p className="text-xs text-gray-400 mt-1">示例：CITYBAG-AP1，SKU025-BLK（每行/逗号分隔）</p>
+            <p className="text-[11px] text-gray-400 mt-0.5 leading-tight">多值用逗号或换行分隔</p>
           </div>
 
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-0.5">
             <label className="text-xs text-gray-500 font-medium">分类</label>
             <select
               value={filterCategory}
               onChange={(e) => { setFilterCategory(e.target.value); setPage(1); }}
-              className="px-2 py-2 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white min-w-[100px]"
+              className="px-2 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white min-w-[100px]"
             >
               {CATEGORY_OPTIONS.map((opt) => <option key={opt}>{opt}</option>)}
             </select>
           </div>
 
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-0.5">
             <label className="text-xs text-gray-500 font-medium">状态</label>
             <select
               value={filterStatus}
               onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }}
-              className="px-2 py-2 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white min-w-[120px]"
+              className="px-2 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white min-w-[120px]"
             >
               {STATUS_OPTIONS.map((opt) => <option key={opt}>{opt}</option>)}
             </select>
           </div>
 
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-0.5">
             <label className="text-xs text-gray-500 font-medium">创建日期</label>
             <div className="flex items-center gap-1">
               <input
                 type="date"
                 value={dateStart}
                 onChange={(e) => { setDateStart(e.target.value); setPage(1); }}
-                className="px-2 py-2 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white"
+                className="px-2 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white"
               />
               <span className="text-gray-400 text-xs shrink-0">→</span>
               <input
                 type="date"
                 value={dateEnd}
                 onChange={(e) => { setDateEnd(e.target.value); setPage(1); }}
-                className="px-2 py-2 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white"
+                className="px-2 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-gray-400 bg-white"
               />
             </div>
           </div>
 
-          <div className="flex flex-col gap-1 justify-end">
+          <div className="flex flex-col gap-0.5 justify-end">
             <label className="text-xs text-transparent font-medium select-none">_</label>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <button
                 onClick={handleReset}
-                className="px-3 py-2 text-sm border border-gray-200 rounded-md hover:bg-gray-50 transition-colors text-gray-600"
+                className="px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 transition-colors text-gray-600"
               >
                 重置
               </button>
               <button
                 onClick={() => setPage(1)}
-                className="px-4 py-2 text-sm bg-gray-900 text-white rounded-md hover:bg-gray-700 transition-colors font-medium"
+                className="px-3 py-1.5 text-sm bg-gray-900 text-white rounded-md hover:bg-gray-700 transition-colors font-medium"
               >
                 🔍 搜索
               </button>
@@ -545,8 +683,8 @@ export default function ProductsPage() {
       </div>
 
       {/* ===== 工具栏 ===== */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <div className="flex items-center border border-gray-200 rounded-md overflow-hidden">
             <button
               onClick={() => setViewMode('list')}
@@ -689,6 +827,16 @@ export default function ProductsPage() {
           </button>
         </div>
       </div>
+
+      {/* ===== 撤回操作提示 ===== */}
+      <UndoToast
+        canUndo={undo.canUndo}
+        nextDescription={undo.nextDescription}
+        undoCount={undo.undoCount}
+        onUndo={handleUndo}
+        lastUndone={undo.lastUndone}
+        onDismiss={undo.dismissLastUndone}
+      />
 
       {/* ===== 数据表格 ===== */}
       <div className="bg-white border border-gray-200 rounded-lg">
@@ -840,16 +988,25 @@ export default function ProductsPage() {
 /* ============================================================
  * 新建产品弹窗（内联，避免额外文件）
  * ============================================================ */
+interface OrderPrefillInput {
+  sku: string;
+  styleName: string;
+  colorName: string;
+  unitPrice: number;
+}
+
 interface CreateProductModalProps {
   open: boolean;
   onClose: () => void;
   onConfirm: (product: ProductListItem) => void;
+  /** 从客户订单「未录入」跳转：预填款式名、大货价（订单 EXW 单价），一件代发价为建议值 */
+  orderPrefill: OrderPrefillInput | null;
 }
 
 const CURRENCIES_CREATE = ['USD', 'CNY', 'EUR', 'GBP', 'JPY'];
 const CATEGORIES_CREATE = CATEGORY_OPTIONS.filter((c) => c !== '全部');
 
-function CreateProductModal({ open, onClose, onConfirm }: CreateProductModalProps) {
+function CreateProductModal({ open, onClose, onConfirm, orderPrefill }: CreateProductModalProps) {
   const [patternCode, setPatternCode] = useState('');
   const [name, setName] = useState('');
   const [category, setCategory] = useState('手袋');
@@ -860,11 +1017,31 @@ function CreateProductModal({ open, onClose, onConfirm }: CreateProductModalProp
   const [dropshipPrice, setDropshipPrice] = useState('');
 
   useEffect(() => {
-    if (open) {
-      setPatternCode(''); setName(''); setCategory('手袋'); setCurrency('USD');
-      setPackWeight(''); setPackSize(''); setBulkPrice(''); setDropshipPrice('');
+    if (!open) return;
+    if (orderPrefill) {
+      setPatternCode('');
+      setName(orderPrefill.styleName.trim());
+      setCategory('手袋');
+      setCurrency('USD');
+      setPackWeight('');
+      setPackSize('');
+      const bulk = orderPrefill.unitPrice;
+      setBulkPrice(String(bulk));
+      /* 一件代发价：用建议倍率，非订单 EXW 单价；用户可改 */
+      const sug =
+        bulk > 0 ? (Math.round(bulk * 1.22 * 100) / 100).toFixed(2) : '';
+      setDropshipPrice(sug);
+    } else {
+      setPatternCode('');
+      setName('');
+      setCategory('手袋');
+      setCurrency('USD');
+      setPackWeight('');
+      setPackSize('');
+      setBulkPrice('');
+      setDropshipPrice('');
     }
-  }, [open]);
+  }, [open, orderPrefill]);
 
   const isValid = patternCode.trim() && name.trim() &&
     Number.isFinite(Number(bulkPrice)) && bulkPrice !== '' &&
@@ -895,7 +1072,20 @@ function CreateProductModal({ open, onClose, onConfirm }: CreateProductModalProp
     >
       <div className="w-full max-w-lg bg-white rounded-xl shadow-2xl overflow-hidden" onMouseDown={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <h2 className="text-base font-semibold text-gray-800">新建产品</h2>
+          <div>
+            <h2 className="text-base font-semibold text-gray-800">
+              {orderPrefill ? '新建产品（从订单引入）' : '新建产品'}
+            </h2>
+            {orderPrefill && (
+              <p className="text-xs text-gray-500 mt-1">
+                已带入 SKU <span className="font-mono text-gray-700">{orderPrefill.sku}</span>
+                {orderPrefill.colorName ? (
+                  <> · 颜色参考：{orderPrefill.colorName}</>
+                ) : null}
+                ；创建后将自动增加一条对应 SKU（大货价与下表一致，一件代发价独立填写）。
+              </p>
+            )}
+          </div>
           <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
         </div>
         <div className="px-6 py-5 space-y-4 max-h-[70vh] overflow-y-auto">
@@ -931,10 +1121,16 @@ function CreateProductModal({ open, onClose, onConfirm }: CreateProductModalProp
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">大货价 *</label>
               <input type="number" min={0} step={0.01} value={bulkPrice} onChange={(e) => setBulkPrice(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} className={inputCls} />
+              {orderPrefill && (
+                <p className="text-[11px] text-blue-600 mt-0.5">默认已填订单 EXW 单价，作为本产品大货价</p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">一件代发价 *</label>
               <input type="number" min={0} step={0.01} value={dropshipPrice} onChange={(e) => setDropshipPrice(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} className={inputCls} />
+              {orderPrefill && (
+                <p className="text-[11px] text-gray-500 mt-0.5">建议值（大货×1.22），非订单字段，请按实际代发价核对</p>
+              )}
             </div>
           </div>
         </div>

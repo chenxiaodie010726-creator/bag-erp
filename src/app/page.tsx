@@ -1,11 +1,30 @@
+'use client';
+
 /* ============================================================
- * 首页 — 自动跳转到订单总览
- * 说明: 用户访问根路径 "/" 时，自动重定向到 "/orders"
- * 文件位置: src/app/page.tsx
+ * 根页面（自动跳转）
+ * 说明: 访问 / 时自动跳转到 /orders 或 /login
  * ============================================================ */
 
-import { redirect } from 'next/navigation';
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/components/auth/AuthProvider';
 
-export default function HomePage() {
-  redirect('/orders');
+export default function RootPage() {
+  const { user, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (loading) return;
+    if (user) {
+      router.replace('/orders');
+    } else {
+      router.replace('/login');
+    }
+  }, [user, loading, router]);
+
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-gray-400 text-sm">加载中...</div>
+    </div>
+  );
 }

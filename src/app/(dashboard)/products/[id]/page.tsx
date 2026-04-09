@@ -4,7 +4,7 @@
 
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import {
@@ -13,12 +13,15 @@ import {
   COLOR_NAME_ZH_MAP,
   type ProductListItem,
 } from '../_components/mockData';
-import { loadProductById } from '../_components/loadFromStorage';
+import { loadProductById, saveProduct } from '../_components/loadFromStorage';
+import { resolveHexForProductSku, isLightColorHex } from '@/lib/colorDisplay';
+import { useColorRegistry } from '@/hooks/useColorRegistry';
 
 const CURRENCY_SYMBOL: Record<string, string> = {
   USD: '$', CNY: '¥', EUR: '€', GBP: '£', JPY: '¥',
 };
 const LIGHT = new Set(['WHT', 'CRM', 'LPK', 'LBL', 'BGE']);
+const EMPTY_GALLERY: string[] = [];
 
 function resolveHex(code: string) {
   return COLOR_MAP[code] ?? (code.startsWith('#') ? code : '#9ca3af');
@@ -28,18 +31,93 @@ function deriveProductTags(p: ProductListItem): string[] {
   return [p.category, '热销', '现货'].filter(Boolean);
 }
 
+function historyStorageKey(productId: string) {
+  return `cf_erp_product_history_${productId}`;
+}
+
+type HistoryEntry = { at: string; product: ProductListItem };
+
+const MAX_HISTORY = 15;
+
+function loadHistoryEntries(productId: string): HistoryEntry[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(historyStorageKey(productId));
+    if (!raw) return [];
+    const p = JSON.parse(raw) as { entries?: HistoryEntry[] };
+    return Array.isArray(p?.entries) ? p.entries : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistHistoryEntries(productId: string, entries: HistoryEntry[]) {
+  try {
+    localStorage.setItem(historyStorageKey(productId), JSON.stringify({ entries: entries.slice(0, MAX_HISTORY) }));
+  } catch { /* quota */ }
+}
+
+function pushHistorySnapshot(productId: string, product: ProductListItem) {
+  const snap = JSON.parse(JSON.stringify(product)) as ProductListItem;
+  const entries = loadHistoryEntries(productId);
+  entries.unshift({ at: new Date().toISOString(), product: snap });
+  persistHistoryEntries(productId, entries);
+}
+
+function deriveListImageUrl(colors: string[], byColor: Record<string, string[]>): string | null {
+  for (const c of colors) {
+    const arr = byColor[c];
+    if (arr?.length) return arr[0] ?? null;
+  }
+  for (const arr of Object.values(byColor)) {
+    if (arr?.length) return arr[0] ?? null;
+  }
+  return null;
+}
+
+function seedImagesByColor(product: ProductListItem): Record<string, string[]> {
+  const existing = product.productImagesByColor;
+  if (existing && Object.keys(existing).length > 0) {
+    return { ...existing };
+  }
+  const out: Record<string, string[]> = {};
+  for (const c of product.colors) out[c] = [];
+  if (product.imageUrl) {
+    const first = product.colors[0] ?? 'default';
+    out[first] = [product.imageUrl];
+  }
+  return out;
+}
+
 /* ══════════════════════════════════════════════════
- * 可交互图库组件 — 按颜色分别存储图片
+ * 可交互图库 — 受控：图片由父组件持久化到产品与 localStorage
  * ══════════════════════════════════════════════════ */
-function ImageGallery({ placeholder, colorKey }: { placeholder: string; colorKey: string }) {
-  const [imagesByColor, setImagesByColor] = useState<Record<string, string[]>>({});
-  const [activeIdxByColor, setActiveIdxByColor] = useState<Record<string, number>>({});
+function ImageGallery({
+  placeholder,
+  colorKey,
+  images,
+  onImagesChange,
+}: {
+  placeholder: string;
+  colorKey: string;
+  images: string[];
+  onImagesChange: (next: string[]) => void;
+}) {
+  const [activeIdx, setActiveIdx] = useState(0);
   const [dragging, setDragging] = useState(false);
   const mainInputRef = useRef<HTMLInputElement>(null);
   const thumbInputRef = useRef<HTMLInputElement>(null);
 
-  const images = imagesByColor[colorKey] ?? [];
-  const activeIdx = activeIdxByColor[colorKey] ?? 0;
+  useEffect(() => {
+    setActiveIdx(0);
+  }, [colorKey]);
+
+  useEffect(() => {
+    setActiveIdx((i) => {
+      if (images.length === 0) return 0;
+      return Math.min(i, images.length - 1);
+    });
+  }, [images]);
 
   function readFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -51,27 +129,24 @@ function ImageGallery({ placeholder, colorKey }: { placeholder: string; colorKey
       }),
     );
     Promise.all(readers).then((urls) => {
-      setImagesByColor((prev) => {
-        const existing = prev[colorKey] ?? [];
-        const newList = [...existing, ...urls];
-        setActiveIdxByColor((pi) => ({ ...pi, [colorKey]: existing.length }));
-        return { ...prev, [colorKey]: newList };
-      });
+      const existing = images;
+      const newList = [...existing, ...urls];
+      onImagesChange(newList);
+      setActiveIdx(existing.length);
     });
   }
 
   const prev = () => {
     const len = Math.max(images.length, 1);
-    setActiveIdxByColor((pi) => ({ ...pi, [colorKey]: ((pi[colorKey] ?? 0) - 1 + len) % len }));
+    setActiveIdx((i) => (i - 1 + len) % len);
   };
   const next = () => {
     const len = Math.max(images.length, 1);
-    setActiveIdxByColor((pi) => ({ ...pi, [colorKey]: ((pi[colorKey] ?? 0) + 1) % len }));
+    setActiveIdx((i) => (i + 1) % len);
   };
 
   return (
     <div className="w-full lg:w-[260px] shrink-0 space-y-2">
-      {/* 主图区 */}
       <div
         className={[
           'relative aspect-square rounded-2xl border-2 transition-colors overflow-hidden cursor-pointer select-none',
@@ -106,12 +181,11 @@ function ImageGallery({ placeholder, colorKey }: { placeholder: string; colorKey
         <input ref={mainInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => readFiles(e.target.files)} />
       </div>
 
-      {/* 缩略图行 */}
       {images.length > 0 && (
         <div className="flex gap-1.5 overflow-x-auto pb-1">
           {images.map((src, i) => (
             <button key={i} type="button"
-              onClick={() => setActiveIdxByColor((pi) => ({ ...pi, [colorKey]: i }))}
+              onClick={() => setActiveIdx(i)}
               className={['w-9 h-9 rounded-md shrink-0 border-2 overflow-hidden transition-colors',
                 i === activeIdx ? 'border-gray-800' : 'border-transparent hover:border-gray-300'].join(' ')}>
               <img src={src} alt="" className="w-full h-full object-cover" />
@@ -123,7 +197,7 @@ function ImageGallery({ placeholder, colorKey }: { placeholder: string; colorKey
         </div>
       )}
 
-      {images.length === 0 && <p className="text-xs text-center text-gray-400">支持 JPG、PNG、WebP</p>}
+      {images.length === 0 && <p className="text-xs text-center text-gray-400">支持 JPG、PNG、WebP；保存后写入产品与列表</p>}
     </div>
   );
 }
@@ -196,16 +270,69 @@ export default function ProductDetailPage() {
   const params = useParams();
   const router = useRouter();
   const id = typeof params.id === 'string' ? params.id : '';
+  const colorRegistry = useColorRegistry();
 
   const [product, setProduct] = useState<ProductListItem | null>(null);
   const [tab, setTab] = useState<'sku' | 'price' | 'stock' | 'log' | 'cost' | 'usage'>('sku');
   const [activeColor, setActiveColor] = useState<string>('');
+  /** 与保存、列表主图同步 */
+  const [imagesByColor, setImagesByColor] = useState<Record<string, string[]>>({});
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [saveFlash, setSaveFlash] = useState<string | null>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const loaded = loadProductById(id);
     setProduct(loaded);
-    if (loaded?.colors?.length) setActiveColor(loaded.colors[0]);
+    if (loaded) {
+      setImagesByColor(seedImagesByColor(loaded));
+      if (loaded.colors?.length) setActiveColor(loaded.colors[0]);
+    }
   }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    setHistoryEntries(loadHistoryEntries(id));
+  }, [id]);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    function close(e: MouseEvent) {
+      if (historyRef.current && !historyRef.current.contains(e.target as Node)) setHistoryOpen(false);
+    }
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [historyOpen]);
+
+  const handleSave = useCallback(() => {
+    if (!product) return;
+    const prevDisk = loadProductById(product.id);
+    if (prevDisk) pushHistorySnapshot(product.id, prevDisk);
+
+    const primary = deriveListImageUrl(product.colors, imagesByColor);
+    const next: ProductListItem = {
+      ...product,
+      imageUrl: primary,
+      productImagesByColor: { ...imagesByColor },
+    };
+    saveProduct(next);
+    setProduct(next);
+    setHistoryEntries(loadHistoryEntries(product.id));
+    setSaveFlash('已保存到本机');
+    window.setTimeout(() => setSaveFlash(null), 2500);
+  }, [product, imagesByColor]);
+
+  const handleRestoreVersion = useCallback((entry: HistoryEntry) => {
+    if (!confirm('确定恢复到此版本？未保存的当前编辑将丢失。')) return;
+    const restored = JSON.parse(JSON.stringify(entry.product)) as ProductListItem;
+    saveProduct(restored);
+    setProduct(restored);
+    setImagesByColor(seedImagesByColor(restored));
+    setHistoryOpen(false);
+    setSaveFlash('已恢复历史版本');
+    window.setTimeout(() => setSaveFlash(null), 2500);
+  }, []);
 
   if (!id) return <p className="text-sm text-gray-500">无效链接</p>;
 
@@ -229,12 +356,61 @@ export default function ProductDetailPage() {
           <span className="text-gray-300">/</span>
           <span className="text-gray-800 font-medium">{product.patternCode}</span>
         </nav>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           <button type="button" onClick={() => router.push('/products')}
             className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">返回列表</button>
-          <button type="button" className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">历史版本 ▾</button>
-          <button type="button" className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">更多操作 ▾</button>
-          <button type="button" className="px-4 py-1.5 text-sm font-medium bg-gray-900 text-white rounded-lg hover:bg-gray-700">保存</button>
+          <div className="relative" ref={historyRef}>
+            <button
+              type="button"
+              onClick={() => {
+                setHistoryEntries(loadHistoryEntries(id));
+                setHistoryOpen((v) => !v);
+              }}
+              className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50"
+            >
+              历史版本 ▾
+            </button>
+            {historyOpen && (
+              <div className="absolute right-0 top-full mt-1 z-40 w-80 max-h-72 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg py-1 text-left">
+                <p className="px-3 py-2 text-xs text-gray-500 border-b border-gray-100">保存时自动记录（最多 {MAX_HISTORY} 条），点击可恢复</p>
+                {historyEntries.length === 0 ? (
+                  <p className="px-3 py-4 text-sm text-gray-400">暂无历史，保存产品后会生成快照</p>
+                ) : (
+                  historyEntries.map((e, i) => (
+                    <button
+                      key={`${e.at}-${i}`}
+                      type="button"
+                      onClick={() => handleRestoreVersion(e)}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-b border-gray-50 last:border-0"
+                    >
+                      <span className="block text-gray-800 font-medium">
+                        {new Date(e.at).toLocaleString('zh-CN', { hour12: false })}
+                      </span>
+                      <span className="text-xs text-gray-500">
+                        主图 {e.product.imageUrl ? '有' : '无'}
+                        {e.product.productImagesByColor
+                          ? ` · ${Object.values(e.product.productImagesByColor).reduce((s, a) => s + (a?.length ?? 0), 0)} 张图`
+                          : ''}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+          <button type="button" className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-400 cursor-not-allowed" title="敬请期待">
+            更多操作 ▾
+          </button>
+          {saveFlash && (
+            <span className="text-xs text-green-600 font-medium">{saveFlash}</span>
+          )}
+          <button
+            type="button"
+            onClick={handleSave}
+            className="px-4 py-1.5 text-sm font-medium bg-gray-900 text-white rounded-lg hover:bg-gray-700"
+          >
+            保存
+          </button>
         </div>
       </div>
 
@@ -244,7 +420,15 @@ export default function ProductDetailPage() {
           <div className="space-y-3">
             {/* 图库 + 基础信息 */}
             <div className="flex flex-col lg:flex-row gap-5">
-              <ImageGallery placeholder="👜" colorKey={activeColor || (product.colors[0] ?? 'default')} />
+              <ImageGallery
+                placeholder="👜"
+                colorKey={activeColor || (product.colors[0] ?? 'default')}
+                images={imagesByColor[activeColor || (product.colors[0] ?? 'default')] ?? EMPTY_GALLERY}
+                onImagesChange={(next) => {
+                  const key = activeColor || (product.colors[0] ?? 'default');
+                  setImagesByColor((prev) => ({ ...prev, [key]: next }));
+                }}
+              />
 
               <div className="flex-1 space-y-3">
                 <div className="flex flex-wrap items-start gap-3">
@@ -374,10 +558,12 @@ export default function ProductDetailPage() {
                     </thead>
                     <tbody className="divide-y divide-gray-50 text-sm">
                       {product.skus.map((sku) => {
-                        const hex = resolveHex(sku.colorCode);
-                        const light = LIGHT.has(sku.colorCode);
+                        const hex = resolveHexForProductSku(sku, colorRegistry);
+                        const light = LIGHT.has(sku.colorCode) || isLightColorHex(hex);
                         const zh = sku.colorNameZh ?? COLOR_NAME_ZH_MAP[sku.colorCode] ?? '—';
-                        const en = COLOR_NAME_MAP[sku.colorCode] ?? sku.colorCode;
+                        const en =
+                          COLOR_NAME_MAP[sku.colorCode] ??
+                          (sku.colorPhrase?.trim() || sku.colorCode);
                         return (
                           <tr key={sku.id} className="hover:bg-gray-50/50">
                             <td className="py-2.5 pr-3">

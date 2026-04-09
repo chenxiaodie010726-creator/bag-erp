@@ -3,18 +3,18 @@
 /* ============================================================
  * 订单详情页
  * 说明: 展示单个 PO 的所有 SKU 明细、分批发货数量
- *       支持导入（匹配 Excel 原始格式）/ 导出
+ *       支持导出；明细请在「订单总览」导入
  * 文件位置: src/app/(dashboard)/orders/[id]/page.tsx
  * URL: /orders/[id]
  * ============================================================ */
 
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import { MOCK_ORDERS } from '../_components/mockData';
 import { getOrderDetail } from './_components/mockData';
-import type { OrderDetailItem, ShipmentBatch, OrderDetailData } from './_components/mockData';
+import type { OrderDetailData } from './_components/mockData';
 import type { OrderItem, OrderStatus } from '../_components/mockData';
 import { syncOrderToInventory, type UnregisteredSkuEntry } from '@/lib/orderInventorySync';
 import { STORAGE_KEYS } from '@/lib/storageKeys';
@@ -65,8 +65,11 @@ export default function OrderDetailPage() {
     if (stored) {
       setDetailDataRaw(stored);
     } else {
-      setDetailDataRaw(getOrderDetail(orderId, order.batches, order.amount, order.poQty));
+      const detail = getOrderDetail(orderId, order.batches, order.amount, order.poQty);
+      setDetailData(detail);
+      syncOrderToInventory(order, detail);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId, order]);
 
   function setDetailData(data: OrderDetailData) {
@@ -75,7 +78,6 @@ export default function OrderDetailPage() {
   }
 
   /* ===== 弹窗 ===== */
-  const [importOpen, setImportOpen]  = useState(false);
   const [copied, setCopied]          = useState(false);
 
   /* ===== 搜索 & 批次筛选 ===== */
@@ -125,23 +127,22 @@ export default function OrderDetailPage() {
     });
   }
 
-  /* ===== 导出 Excel (匹配 image 2 格式) ===== */
+  /* ===== 导出 Excel（与订单总览导入模板一致：PO# → SKU → Color颜色 → Style Name → 价格FOB → 数量 → Ship date） ===== */
   function handleExport() {
     if (!detailData || !order) return;
     const dates = detailData.shipmentDates;
 
     const headers = [
-      '图片', 'SKU', 'Color Name', 'Style Name', 'EXW', 'EXW Cost', 'QTY',
+      'PO#', 'SKU', 'Color颜色', 'Style Name', '价格FOB', '数量',
       ...dates.map((d) => `Ship date Start ${d}`),
     ];
 
     const rows = detailData.items.map((item) => [
-      '',  // 图片（留空）
+      order.poNumber,
       item.sku,
       item.colorName,
       item.styleName,
       item.unitPrice,
-      +(item.unitPrice * item.quantity).toFixed(2),
       item.quantity,
       ...dates.map((_, di) => {
         const qty = item.shipments[di]?.qty ?? null;
@@ -149,12 +150,11 @@ export default function OrderDetailPage() {
       }),
     ]);
 
-    /* Total 汇总行 */
+    const sumQty = detailData.items.reduce((s, i) => s + i.quantity, 0);
+    /* PO#～Style 合并为 Total；价格FOB 空；数量 列合计；其后各 Ship date 列合计 */
     const totalRow = [
-      'Total', '', '', '',
-      '', // 不汇总单价
-      +(detailData.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0)).toFixed(2),
-      detailData.items.reduce((s, i) => s + i.quantity, 0),
+      'Total', '', '', '', '',
+      sumQty,
       ...dates.map((_, di) =>
         detailData.items.reduce((s, i) => s + (i.shipments[di]?.qty ?? 0), 0)
       ),
@@ -162,32 +162,17 @@ export default function OrderDetailPage() {
 
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows, totalRow]);
 
-    /* 列宽 */
     ws['!cols'] = [
-      { wch: 8 }, { wch: 34 }, { wch: 16 }, { wch: 26 },
-      { wch: 8 }, { wch: 12 }, { wch: 8 },
+      { wch: 14 }, { wch: 34 }, { wch: 16 }, { wch: 26 },
+      { wch: 10 }, { wch: 8 },
       ...dates.map(() => ({ wch: 20 })),
     ];
 
-    /* 合并"Total"标签跨前4列 */
     ws['!merges'] = [{ s: { r: rows.length + 1, c: 0 }, e: { r: rows.length + 1, c: 3 } }];
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, order.poNumber.replace('#', ''));
     XLSX.writeFile(wb, `${order.poNumber.replace('#', '')}.xlsx`);
-  }
-
-  /* ===== 导入确认回调 ===== */
-  function handleImportConfirm(data: OrderDetailData) {
-    setDetailData(data);
-    setPage(1);
-
-    if (order) {
-      const { unregisteredSkus } = syncOrderToInventory(order, data);
-      if (unregisteredSkus.length > 0) {
-        setUnregAlert(unregisteredSkus);
-      }
-    }
   }
 
   /* ===== 重置 ===== */
@@ -229,16 +214,13 @@ export default function OrderDetailPage() {
             <span className="text-gray-700 font-medium">{order.poNumber}</span>
           </div>
           <h1 className="text-xl font-bold text-gray-800">订单详情</h1>
-          <p className="text-sm text-gray-400 mt-0.5">查看和管理订单的详细信息</p>
+          <p className="text-sm text-gray-400 mt-0.5">
+            查看和管理订单的详细信息 · 请在「订单总览」导入明细（Excel 中需含 PO# 列）
+          </p>
         </div>
         <div className="flex items-center gap-2 mt-1">
           <button
-            onClick={() => setImportOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
-          >
-            <UploadIcon /> 导入
-          </button>
-          <button
+            type="button"
             onClick={handleExport}
             className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
           >
@@ -501,14 +483,6 @@ export default function OrderDetailPage() {
         </div>
       </div>
 
-      {/* ===== 导入弹窗 ===== */}
-      {importOpen && (
-        <ImportDetailModal
-          onClose={() => setImportOpen(false)}
-          onConfirm={handleImportConfirm}
-        />
-      )}
-
       {/* ===== 未录入 SKU 提醒弹窗 ===== */}
       {unregAlert && unregAlert.length > 0 && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
@@ -572,283 +546,6 @@ export default function OrderDetailPage() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-
-/* ============================================================
- * 导入明细弹窗
- * 解析格式：SKU | Color Name | Style Name | EXW | EXW Cost | QTY | Ship date Start [date]...
- * ============================================================ */
-interface ImportDetailModalProps {
-  onClose: () => void;
-  onConfirm: (data: OrderDetailData) => void;
-}
-
-type ImportStage = 'idle' | 'parsing' | 'done';
-interface ImportResult { data: OrderDetailData | null; errors: string[] }
-
-async function parseDetailExcel(file: File): Promise<ImportResult> {
-  const buffer = await file.arrayBuffer();
-  const wb = XLSX.read(buffer, { type: 'array', cellDates: true });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-
-  /* 使用 header:1 拿到原始二维数组，方便解析表头 */
-  const rawRows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '' }) as unknown[][];
-  if (rawRows.length < 2) return { data: null, errors: ['文件为空或格式不正确'] };
-
-  const headers = rawRows[0] as string[];
-  const errors: string[] = [];
-
-  /* --- 定位关键列 --- */
-  const find = (kw: string) => headers.findIndex((h) => String(h ?? '').toLowerCase().includes(kw.toLowerCase()));
-  const skuIdx    = find('sku');
-  const colorIdx  = find('color');
-  const styleIdx  = find('style');
-  const exwIdx    = find('exw');
-  const qtyIdx    = find('qty');
-
-  if (skuIdx < 0) return { data: null, errors: ['未找到 SKU 列，请检查表头'] };
-
-  /* --- 动态定位批次日期列（包含 "ship date"） --- */
-  const shipCols: { idx: number; date: string }[] = [];
-  headers.forEach((h, i) => {
-    const hs = String(h ?? '').toLowerCase();
-    if (hs.includes('ship date') || hs.includes('ship_date')) {
-      const match = String(h).match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
-      const date = match ? match[1] : `批次${shipCols.length + 1}`;
-      shipCols.push({ idx: i, date });
-    }
-  });
-
-  const items: OrderDetailItem[] = [];
-  for (let ri = 1; ri < rawRows.length; ri++) {
-    const row = rawRows[ri] as unknown[];
-    const sku = String(row[skuIdx] ?? '').trim();
-    if (!sku || sku.toLowerCase() === 'total' || sku === '') continue;
-
-    const priceRaw = String(row[exwIdx] ?? '').replace(/[$,\s]/g, '');
-    const unitPrice = parseFloat(priceRaw) || 0;
-    const quantity  = parseInt(String(row[qtyIdx] ?? '0'), 10) || 0;
-
-    const shipments: ShipmentBatch[] = shipCols.map(({ idx, date }) => {
-      const val = row[idx];
-      if (val === null || val === '' || val === '-' || val === '—') return { date, qty: null };
-      const n = parseInt(String(val), 10);
-      return { date, qty: isNaN(n) ? null : n };
-    });
-
-    if (!unitPrice && !quantity) {
-      errors.push(`第 ${ri + 1} 行数据不完整，已跳过`);
-      continue;
-    }
-
-    items.push({
-      id: `imp_${ri}_${Date.now()}`,
-      sku,
-      colorName: String(row[colorIdx] ?? '').trim(),
-      styleName: String(row[styleIdx] ?? '').trim(),
-      unitPrice,
-      quantity,
-      shipments,
-      remarks: '',
-    });
-  }
-
-  if (items.length === 0) return { data: null, errors: ['未解析到有效明细行', ...errors] };
-
-  return {
-    data: { shipmentDates: shipCols.map((c) => c.date), items },
-    errors,
-  };
-}
-
-function ImportDetailModal({ onClose, onConfirm }: ImportDetailModalProps) {
-  const [stage, setStage]       = useState<ImportStage>('idle');
-  const [isDragging, setIsDrag] = useState(false);
-  const [fileName, setFileName] = useState('');
-  const [result, setResult]     = useState<ImportResult | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  async function handleFile(file: File) {
-    if (!file.name.match(/\.(xlsx|xls)$/i)) {
-      setResult({ data: null, errors: ['仅支持 .xlsx / .xls 格式'] });
-      setStage('done');
-      return;
-    }
-    setFileName(file.name);
-    setStage('parsing');
-    setResult(null);
-    const res = await parseDetailExcel(file);
-    setResult(res);
-    setStage('done');
-  }
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDrag(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  function handleConfirm() {
-    if (result?.data) { onConfirm(result.data); onClose(); }
-  }
-
-  function downloadTemplate() {
-    const rows = [
-      ['图片', 'SKU', 'Color Name', 'Style Name', 'EXW', 'EXW Cost', 'QTY', 'Ship date Start 4/15/26', 'Ship date Start 4/30/26'],
-      ['', '26SP-W1694-1PRSE-TNC-BLU1-ONS', 'ROYAL BLUE/LIME', 'VANITY RALLY SHOULDER BAG', 13, 1040, 80, 50, 30],
-      ['', '26SP-W1695-1PRSE-CRC-GRN1-ONS', 'MATCHA',          'RALLY SHOULDER BAG',        13, 1040, 80, '', 80],
-    ];
-    const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws['!cols'] = [{ wch:8 },{ wch:36 },{ wch:16 },{ wch:26 },{ wch:8 },{ wch:12 },{ wch:8 },{ wch:20 },{ wch:20 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '订单明细模板');
-    XLSX.writeFile(wb, '订单明细导入模板.xlsx');
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="w-full max-w-lg bg-white rounded-xl shadow-2xl overflow-hidden">
-        {/* 标题 */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <div>
-            <h2 className="text-base font-semibold text-gray-800">导入订单明细</h2>
-            <p className="text-xs text-gray-400 mt-0.5">格式：SKU · Color · Style · EXW · QTY · Ship date 列（动态）</p>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
-        </div>
-
-        <div className="px-6 py-5 space-y-4">
-          {/* 上传区 */}
-          {(stage === 'idle' || stage === 'parsing') && (
-            <div
-              onDragOver={(e) => { e.preventDefault(); setIsDrag(true); }}
-              onDragLeave={() => setIsDrag(false)}
-              onDrop={handleDrop}
-              onClick={() => fileRef.current?.click()}
-              className={[
-                'flex flex-col items-center justify-center gap-3 h-36 border-2 border-dashed rounded-lg cursor-pointer transition-colors',
-                isDragging ? 'border-blue-400 bg-blue-50' : 'border-gray-300 hover:border-gray-400 hover:bg-gray-50',
-                stage === 'parsing' ? 'pointer-events-none opacity-60' : '',
-              ].join(' ')}
-            >
-              {stage === 'parsing' ? (
-                <>
-                  <div className="w-8 h-8 border-4 border-gray-200 border-t-blue-500 rounded-full animate-spin" />
-                  <p className="text-sm text-gray-500">正在解析 {fileName}...</p>
-                </>
-              ) : (
-                <>
-                  <div className="text-3xl">📂</div>
-                  <div className="text-center">
-                    <p className="text-sm font-medium text-gray-700">点击选择文件，或拖拽至此</p>
-                    <p className="text-xs text-gray-400 mt-1">仅支持 .xlsx / .xls</p>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-          <input ref={fileRef} type="file" accept=".xlsx,.xls"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }}
-            className="hidden"
-          />
-
-          {/* 解析结果 */}
-          {stage === 'done' && result && (
-            <div className="space-y-3">
-              {fileName && (
-                <div className="flex items-center gap-2 text-sm text-gray-600">
-                  <span>📄</span><span className="font-medium">{fileName}</span>
-                </div>
-              )}
-              {result.errors.length > 0 && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 max-h-32 overflow-y-auto">
-                  <p className="text-xs font-semibold text-amber-700 mb-1">⚠ {result.errors.length} 条警告</p>
-                  {result.errors.map((e, i) => <p key={i} className="text-xs text-amber-600">{e}</p>)}
-                </div>
-              )}
-              {result.data && (
-                <div className="rounded-lg border border-green-200 bg-green-50 p-3">
-                  <p className="text-xs font-semibold text-green-700 mb-2">✓ 解析成功</p>
-                  <div className="flex gap-6 text-sm">
-                    <div>
-                      <span className="text-gray-500 text-xs">SKU 条数</span>
-                      <p className="font-bold text-gray-800 text-lg">{result.data.items.length}</p>
-                    </div>
-                    <div>
-                      <span className="text-gray-500 text-xs">批次数</span>
-                      <p className="font-bold text-gray-800 text-lg">{result.data.shipmentDates.length}</p>
-                    </div>
-                    <div>
-                      <span className="text-gray-500 text-xs">总数量</span>
-                      <p className="font-bold text-gray-800 text-lg">
-                        {result.data.items.reduce((s, i) => s + i.quantity, 0).toLocaleString()}
-                      </p>
-                    </div>
-                    <div>
-                      <span className="text-gray-500 text-xs">总金额</span>
-                      <p className="font-bold text-gray-800 text-lg">
-                        ${result.data.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0)
-                          .toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                      </p>
-                    </div>
-                  </div>
-                  {/* 批次日期 */}
-                  <div className="mt-2 flex gap-2 flex-wrap">
-                    {result.data.shipmentDates.map((d, i) => (
-                      <span key={i} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-                        批次{i + 1}：{d}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {!result.data && result.errors.length > 0 && (
-                <div className="rounded-lg border border-red-200 bg-red-50 p-3">
-                  <p className="text-xs text-red-600">未解析到有效数据，请检查文件格式。</p>
-                </div>
-              )}
-              <button
-                onClick={() => { setStage('idle'); setFileName(''); setResult(null); }}
-                className="w-full text-xs text-gray-400 hover:text-gray-600 underline text-center pt-1"
-              >
-                重新选择文件
-              </button>
-            </div>
-          )}
-
-          {/* 模板下载 */}
-          <div className="flex items-center justify-between text-xs text-gray-400 pt-1 border-t border-gray-100">
-            <span>与实际收到的 Excel 格式完全一致</span>
-            <button onClick={downloadTemplate} className="text-blue-500 hover:text-blue-700 underline">
-              ↓ 下载导入模板
-            </button>
-          </div>
-        </div>
-
-        {/* 底部按钮 */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 bg-gray-50 border-t border-gray-200">
-          <button onClick={onClose}
-            className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
-          >取消</button>
-          <button
-            onClick={handleConfirm}
-            disabled={!result?.data}
-            className={[
-              'px-5 py-2 text-sm font-medium rounded-md transition-colors',
-              result?.data ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-200 text-gray-400 cursor-not-allowed',
-            ].join(' ')}
-          >
-            确认导入{result?.data ? ` (${result.data.items.length} 条)` : ''}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -934,13 +631,6 @@ function CheckSmallIcon() {
   return (
     <svg className="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-    </svg>
-  );
-}
-function UploadIcon() {
-  return (
-    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
     </svg>
   );
 }

@@ -5,7 +5,8 @@
 
 'use client';
 
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import SetTable from './_components/SetTable';
 import AddSetModal from './_components/AddSetModal';
 import type { AddSetPayload } from './_components/AddSetModal';
@@ -13,6 +14,8 @@ import EditSetModal from './_components/EditSetModal';
 import type { EditSetPatch } from './_components/EditSetModal';
 import { MOCK_SETS, SET_STATUS_OPTIONS, COLOR_MAP, CURRENCY_SYMBOL } from './_components/mockData';
 import type { SetItem, SetSkuItem } from './_components/mockData';
+import { useUndoManager, useUndoKeyboard } from '@/hooks/useUndoManager';
+import UndoToast from '@/components/UndoToast';
 
 /* ── 分页组件（复用 products 的样式逻辑） ── */
 interface PaginationProps {
@@ -76,9 +79,18 @@ function saveToStorage(data: SetItem[]) {
 }
 
 /* ════════════════════════════════════════════════════════════
- * 主页面
+ * 主页面（默认导出供 /sets 路由使用）
  * ════════════════════════════════════════════════════════════ */
 export default function SetsPage() {
+  return <SetsContent />;
+}
+
+/* ════════════════════════════════════════════════════════════
+ * 套装内容组件（可嵌入产品管理页面作为 Tab）
+ * showHeader=false 时不渲染页面标题，由外层提供
+ * ════════════════════════════════════════════════════════════ */
+export function SetsContent({ showHeader = true }: { showHeader?: boolean } = {}) {
+  const router = useRouter();
 
   /* ── 数据源 ── */
   const [sets, setSetsRaw] = useState<SetItem[]>(MOCK_SETS);
@@ -100,6 +112,22 @@ export default function SetsPage() {
       return next;
     });
   }
+
+  const undoMgr = useUndoManager<SetItem[]>();
+
+  function pushUndo(description: string) {
+    undoMgr.push(sets, description);
+  }
+
+  const handleUndo = useCallback(() => {
+    const entry = undoMgr.pop();
+    if (entry) {
+      setSetsRaw(entry.snapshot);
+      saveToStorage(entry.snapshot);
+    }
+  }, [undoMgr]);
+
+  useUndoKeyboard(handleUndo, undoMgr.canUndo);
 
   const isStoredData = typeof window !== 'undefined' && !!localStorage.getItem(STORAGE_KEY);
 
@@ -275,21 +303,27 @@ export default function SetsPage() {
       })),
       ...payload,
     };
+    pushUndo(`新建套装: ${payload.sku}`);
     setSets((prev) => [newItem, ...prev]);
     setAddModalOpen(false);
   }
 
   function handleEditConfirm(id: string, patch: EditSetPatch) {
+    const target = sets.find((s) => s.id === id);
+    pushUndo(`编辑套装: ${target?.sku ?? id}`);
     setSets((prev) => prev.map((s) => s.id === id ? { ...s, ...patch } : s));
     setEditModalItem(null);
   }
 
   function handleUpdateSetSkus(setId: string, skus: SetSkuItem[]) {
+    const target = sets.find((s) => s.id === setId);
+    pushUndo(`修改套装 SKU: ${target?.sku ?? setId}`);
     setSets((prev) => prev.map((s) => s.id === setId ? { ...s, skus } : s));
   }
 
   function bulkDelete() {
-    if (!confirm(`确认删除选中的 ${selectedIds.size} 个套装？此操作不可撤销。`)) return;
+    if (!confirm(`确认删除选中的 ${selectedIds.size} 个套装？删除后可撤回恢复。`)) return;
+    pushUndo(`删除 ${selectedIds.size} 个套装`);
     setSets((prev) => prev.filter((s) => !selectedIds.has(s.id)));
     setSelectedIds(new Set());
     setBatchPanelOpen(false);
@@ -298,6 +332,7 @@ export default function SetsPage() {
   function applyBulkEdit() {
     const bp = parseFloat(batchBulkPrice);
     const dp = parseFloat(batchDropshipPrice);
+    pushUndo(`批量修改 ${selectedIds.size} 个套装价格`);
     setSets((prev) =>
       prev.map((s) => {
         if (!selectedIds.has(s.id)) return s;
@@ -336,13 +371,42 @@ export default function SetsPage() {
   return (
     <div className="flex flex-col gap-6">
 
-      {/* ===== 页头 ===== */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-gray-900">套装列表</h1>
-          <p className="text-sm text-gray-400 mt-0.5">管理所有套装 SKU 信息及其包含的纸格款号</p>
+      {/* ===== 页头（showHeader=false 时隐藏标题，仅保留操作按钮） ===== */}
+      {showHeader && (
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-semibold text-gray-900">套装列表</h1>
+            <p className="text-sm text-gray-400 mt-0.5">管理所有套装 SKU 信息及其包含的纸格款号</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {isStoredData && (
+              <button
+                type="button"
+                onClick={handleClearStorage}
+                className="px-3 py-1.5 text-xs text-amber-600 border border-amber-200 bg-amber-50 rounded-md hover:bg-amber-100 transition-colors"
+              >
+                × 清除保存
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleExport}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              <span>↓</span> 导出
+            </button>
+            <button
+              type="button"
+              onClick={() => setAddModalOpen(true)}
+              className="flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-700 transition-colors"
+            >
+              + 新建套装
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+      )}
+      {!showHeader && (
+        <div className="flex items-center justify-end gap-2">
           {isStoredData && (
             <button
               type="button"
@@ -367,7 +431,7 @@ export default function SetsPage() {
             + 新建套装
           </button>
         </div>
-      </div>
+      )}
 
       {/* ===== 搜索栏 ===== */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
@@ -734,6 +798,16 @@ export default function SetsPage() {
         item={editModalItem}
         onClose={() => setEditModalItem(null)}
         onConfirm={handleEditConfirm}
+      />
+
+      {/* ===== 撤回操作提示 ===== */}
+      <UndoToast
+        canUndo={undoMgr.canUndo}
+        nextDescription={undoMgr.nextDescription}
+        undoCount={undoMgr.undoCount}
+        onUndo={handleUndo}
+        lastUndone={undoMgr.lastUndone}
+        onDismiss={undoMgr.dismissLastUndone}
       />
     </div>
   );

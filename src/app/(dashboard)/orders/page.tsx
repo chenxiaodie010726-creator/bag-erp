@@ -10,11 +10,46 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import * as XLSX from 'xlsx';
-import ImportOrderModal from './_components/ImportOrderModal';
+import ImportOrderDetailModal from './_components/ImportOrderDetailModal';
 import { MOCK_ORDERS } from './_components/mockData';
 import type { OrderItem, OrderStatus } from './_components/mockData';
+import { getOrderDetail } from '@/app/(dashboard)/orders/[id]/_components/mockData';
+import type { OrderDetailData } from '@/app/(dashboard)/orders/[id]/_components/mockData';
+import { syncOrderToInventory, type UnregisteredSkuEntry } from '@/lib/orderInventorySync';
+import { STORAGE_KEYS } from '@/lib/storageKeys';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/components/auth/AuthProvider';
 
 const STORAGE_KEY = 'cf_erp_orders_v1';
+
+/** 若本地已有订单明细，用明细行数作为 SKU 数量，与详情页一致 */
+function readDetailSkuCount(orderId: string): number | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.ORDER_DETAIL_PREFIX + orderId);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as { items?: { length: number } };
+    const n = data?.items?.length;
+    return typeof n === 'number' && n >= 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 列表「SKU数量」与订单详情页对齐：
+ * - 若已保存订单明细（含 Excel 导入明细），用明细行数；
+ * - 若为 Excel/表单新建的订单且尚无明细，用列表里用户填写的 poQty；
+ * - 其余（模拟种子订单等）用与详情页相同的 getOrderDetail 行数，不用 mock 里随机 poQty。
+ */
+function getDisplaySkuCount(o: OrderItem): number {
+  const fromStorage = readDetailSkuCount(o.id);
+  if (fromStorage != null) return fromStorage;
+  if (o.id.startsWith('imported_') || o.id.startsWith('created_')) {
+    return o.poQty;
+  }
+  return getOrderDetail(o.id, o.batches, o.amount, o.poQty).items.length;
+}
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
 function saveToStorage(data: OrderItem[]) {
@@ -25,6 +60,8 @@ function saveToStorage(data: OrderItem[]) {
  * 主页面
  * ============================================================ */
 export default function OrdersPage() {
+  const router = useRouter();
+  const { showPrice } = useAuth();
 
   /* ===== 数据源 ===== */
   const [orders, setOrdersRaw] = useState<OrderItem[]>(MOCK_ORDERS);
@@ -33,7 +70,19 @@ export default function OrdersPage() {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        const parsed = JSON.parse(stored) as OrderItem[];
+        let parsed = JSON.parse(stored) as OrderItem[];
+        /* 历史数据：PO#031826 曾误存为 poQty 32，与明细 20 条 SKU 不一致 */
+        let migrated = false;
+        parsed = parsed.map((o) => {
+          if (o.id === 'order_known_0' && o.poNumber === 'PO#031826' && o.poQty === 32) {
+            migrated = true;
+            return { ...o, poQty: 20 };
+          }
+          return o;
+        });
+        if (migrated) {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+        }
         if (Array.isArray(parsed) && parsed.length > 0) setOrdersRaw(parsed);
       }
     } catch { /* fallback to mock */ }
@@ -50,11 +99,15 @@ export default function OrdersPage() {
   /* ===== 弹窗 ===== */
   const [importOpen, setImportOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [unregAlert, setUnregAlert] = useState<UnregisteredSkuEntry[] | null>(null);
 
-  /* ===== 时间轴筛选 ===== */
-  const [filterYear, setFilterYear]         = useState(2024);
+  /* ===== 时间轴筛选（默认北京时间当前年份，全年范围） ===== */
+  const [filterYear, setFilterYear]         = useState(() => {
+    const now = new Date(Date.now() + 8 * 3600_000);
+    return now.getUTCFullYear();
+  });
   const [filterStartMonth, setFilterStartMonth] = useState(1);
-  const [filterEndMonth, setFilterEndMonth]     = useState(4);
+  const [filterEndMonth, setFilterEndMonth]     = useState(12);
 
   /* ===== 搜索 & 筛选 ===== */
   const [searchText, setSearchText]   = useState('');
@@ -71,13 +124,33 @@ export default function OrdersPage() {
   const [page, setPage]         = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
+  /* 从详情页返回或保存明细后，刷新列表中的 SKU 数量 */
+  const [detailSkuSync, setDetailSkuSync] = useState(0);
+  useEffect(() => {
+    function bump() { setDetailSkuSync((x) => x + 1); }
+    window.addEventListener('focus', bump);
+    const onVis = () => { if (document.visibilityState === 'visible') bump(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('focus', bump);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+
+  const ordersWithDetailSku = useMemo(() => {
+    return orders.map((o) => ({
+      ...o,
+      poQty: getDisplaySkuCount(o),
+    }));
+  }, [orders, detailSkuSync]);
+
   /* ===== 筛选逻辑 ===== */
   const filteredOrders = useMemo(() => {
     const yearStart = `${filterYear}-${String(filterStartMonth).padStart(2, '0')}-01`;
     const lastDay = new Date(filterYear, filterEndMonth, 0).getDate();
     const yearEnd = `${filterYear}-${String(filterEndMonth).padStart(2, '0')}-${lastDay}`;
 
-    return orders
+    return ordersWithDetailSku
       .filter((o) => {
         /* 时间轴年月范围 */
         if (o.orderDate < yearStart || o.orderDate > yearEnd) return false;
@@ -101,7 +174,7 @@ export default function OrdersPage() {
         const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
         return sortDir === 'asc' ? cmp : -cmp;
       });
-  }, [orders, filterYear, filterStartMonth, filterEndMonth, searchText, filterStatus, filterBatches, dateStart, dateEnd, sortField, sortDir]);
+  }, [ordersWithDetailSku, filterYear, filterStartMonth, filterEndMonth, searchText, filterStatus, filterBatches, dateStart, dateEnd, sortField, sortDir]);
 
   /* 筛选后重置到第一页 */
   useEffect(() => { setPage(1); }, [filteredOrders]);
@@ -110,10 +183,10 @@ export default function OrdersPage() {
   const stats = useMemo(() => {
     const totalOrders  = orders.length;
     const totalAmount  = filteredOrders.reduce((s, o) => s + o.amount, 0);
-    const totalFiltered = filteredOrders.length;
+    const totalSkuQty  = filteredOrders.reduce((s, o) => s + o.poQty, 0);
     const incomplete   = filteredOrders.filter((o) => o.status === '待确认' || o.status === '部分发货').length;
     const complete     = filteredOrders.filter((o) => o.status === '已发货' || o.status === '已确认').length;
-    return { totalOrders, totalAmount, totalFiltered, incomplete, complete };
+    return { totalOrders, totalAmount, totalSkuQty, incomplete, complete };
   }, [orders, filteredOrders]);
 
   /* ===== 分页切片 ===== */
@@ -132,25 +205,45 @@ export default function OrdersPage() {
 
   /* ===== 导出 ===== */
   function handleExport() {
-    const rows = filteredOrders.map((o) => ({
-      'PO号':          o.poNumber,
-      '订单金额(USD)': o.amount,
-      'PO数量':        o.poQty,
-      '分批':          `${o.batches}批`,
-      '订单状态':      o.status,
-      '订单日期':      o.orderDate,
-      '客户名称':      o.customerName,
-    }));
+    const rows = filteredOrders.map((o) => {
+      const row: Record<string, string | number> = {
+        'PO号': o.poNumber,
+        'SKU数量': o.poQty,
+        '分批': `${o.batches}批`,
+        '订单状态': o.status,
+        '订单日期': o.orderDate,
+        '客户名称': o.customerName,
+      };
+      if (showPrice) {
+        row['订单金额(USD)'] = o.amount;
+      }
+      return row;
+    });
     const ws = XLSX.utils.json_to_sheet(rows);
-    ws['!cols'] = [{ wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 22 }];
+    ws['!cols'] = showPrice
+      ? [{ wch: 14 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 22 }, { wch: 16 }]
+      : [{ wch: 14 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 22 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '订单总览');
     XLSX.writeFile(wb, `订单总览_${filterYear}年${filterStartMonth}-${filterEndMonth}月.xlsx`);
   }
 
-  /* ===== 导入回调 ===== */
-  function handleImportConfirm(data: OrderItem[]) {
-    setOrders(data);
+  /* ===== 导入订单明细：按 PO# 列写入，可一次更新多个订单 ===== */
+  function handleOrderDetailImported(payloads: { order: OrderItem; detail: OrderDetailData }[]) {
+    const mergedById = new Map<string, OrderItem>();
+    const allUnreg: UnregisteredSkuEntry[] = [];
+
+    for (const { order, detail } of payloads) {
+      const amount = detail.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
+      const batches = Math.max(1, detail.shipmentDates.length);
+      const merged: OrderItem = { ...order, poQty: detail.items.length, amount, batches };
+      mergedById.set(order.id, merged);
+      const { unregisteredSkus } = syncOrderToInventory(merged, detail);
+      allUnreg.push(...unregisteredSkus);
+    }
+
+    setOrders((prev) => prev.map((o) => mergedById.get(o.id) ?? o));
+    if (allUnreg.length > 0) setUnregAlert(allUnreg);
     setPage(1);
   }
 
@@ -199,10 +292,11 @@ export default function OrdersPage() {
             </button>
           )}
           <button
+            type="button"
             onClick={() => setImportOpen(true)}
             className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
           >
-            <UploadIcon /> 导入
+            <UploadIcon /> 导入订单明细
           </button>
           <button
             onClick={handleExport}
@@ -222,7 +316,7 @@ export default function OrdersPage() {
       {/* ========================================
           统计卡片
           ======================================== */}
-      <div className="grid grid-cols-5 gap-3">
+      <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${showPrice ? 5 : 4}, minmax(0, 1fr))` }}>
         <StatCard
           icon={<DocIcon />}
           iconBg="bg-blue-50"
@@ -230,18 +324,20 @@ export default function OrdersPage() {
           value={stats.totalOrders.toString()}
           valueClass="text-gray-800"
         />
-        <StatCard
-          icon={<DollarIcon />}
-          iconBg="bg-green-50"
-          label="订单金额"
-          value={`$${stats.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          valueClass="text-gray-800 text-base"
-        />
+        {showPrice && (
+          <StatCard
+            icon={<DollarIcon />}
+            iconBg="bg-green-50"
+            label="订单金额"
+            value={`$${stats.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            valueClass="text-gray-800 text-base"
+          />
+        )}
         <StatCard
           icon={<ListIcon />}
           iconBg="bg-amber-50"
-          label="总PO数量"
-          value={stats.totalFiltered.toString()}
+          label="总SKU数量"
+          value={stats.totalSkuQty.toLocaleString()}
           valueClass="text-gray-800"
         />
         <StatCard
@@ -366,8 +462,10 @@ export default function OrdersPage() {
           <thead>
             <tr className="border-b border-gray-200 bg-gray-50">
               <SortTh field="poNumber"    label="PO号"         sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-              <SortTh field="amount"      label="订单金额 (USD)" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
-              <SortTh field="poQty"       label="PO数量"        sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+              {showPrice && (
+                <SortTh field="amount"      label="订单金额 (USD)" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+              )}
+              <SortTh field="poQty"       label="SKU数量"       sortField={sortField} sortDir={sortDir} onSort={handleSort} />
               <SortTh field="batches"     label="分批"          sortField={sortField} sortDir={sortDir} onSort={handleSort} />
               <SortTh field="status"      label="订单状态"      sortField={sortField} sortDir={sortDir} onSort={handleSort} />
               <SortTh field="orderDate"   label="订单日期"      sortField={sortField} sortDir={sortDir} onSort={handleSort} />
@@ -378,7 +476,7 @@ export default function OrdersPage() {
           <tbody>
             {pageItems.length === 0 ? (
               <tr>
-                <td colSpan={8} className="text-center py-16 text-gray-400">
+                <td colSpan={showPrice ? 8 : 7} className="text-center py-16 text-gray-400">
                   <div className="text-4xl mb-3">📭</div>
                   <p className="text-sm">没有符合条件的订单</p>
                   <button onClick={handleReset} className="mt-2 text-sm text-blue-500 hover:underline">
@@ -399,10 +497,12 @@ export default function OrdersPage() {
                     </Link>
                   </td>
                   {/* 订单金额 */}
-                  <td className="px-4 py-3 text-gray-700 whitespace-nowrap">
-                    ${order.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                  </td>
-                  {/* PO数量 */}
+                  {showPrice && (
+                    <td className="px-4 py-3 text-gray-700 whitespace-nowrap">
+                      ${order.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </td>
+                  )}
+                  {/* SKU数量 */}
                   <td className="px-4 py-3 text-gray-700">{order.poQty}</td>
                   {/* 分批 */}
                   <td className="px-4 py-3 text-gray-700">{order.batches} 批</td>
@@ -472,12 +572,79 @@ export default function OrdersPage() {
         </div>
       </div>
 
-      {/* ===== 导入弹窗 ===== */}
-      <ImportOrderModal
+      {/* ===== 导入订单明细（写入所选 PO 的明细与本地缓存） ===== */}
+      <ImportOrderDetailModal
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        onConfirm={handleImportConfirm}
+        orders={orders}
+        onImported={handleOrderDetailImported}
       />
+
+      {unregAlert && unregAlert.length > 0 && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+          onClick={(e) => { if (e.target === e.currentTarget) setUnregAlert(null); }}
+        >
+          <div className="w-full max-w-lg bg-white rounded-xl shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">⚠️</span>
+                <div>
+                  <h2 className="text-base font-semibold text-gray-800">发现未录入的 SKU</h2>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    以下 {unregAlert.length} 个 SKU 在产品列表/套装列表中不存在
+                  </p>
+                </div>
+              </div>
+              <button type="button" onClick={() => setUnregAlert(null)} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+            </div>
+
+            <div className="px-6 py-4 max-h-64 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 text-left">
+                    <th className="pb-2 font-medium text-gray-500">SKU</th>
+                    <th className="pb-2 font-medium text-gray-500">款式</th>
+                    <th className="pb-2 font-medium text-gray-500 text-right">数量</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unregAlert.map((item) => (
+                    <tr key={item.id} className="border-b border-gray-100">
+                      <td className="py-2 font-mono text-xs text-gray-700">{item.sku}</td>
+                      <td className="py-2 text-gray-600">{item.styleName}</td>
+                      <td className="py-2 text-right text-gray-700">{item.quantity}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="px-6 py-3 bg-amber-50 border-t border-amber-100">
+              <p className="text-xs text-amber-700">
+                这些 SKU 已自动添加到「未录入」页面，同时订单已同步到「订单库存」（入库数量为 0）。
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 px-6 py-4 bg-gray-50 border-t border-gray-200">
+              <button
+                type="button"
+                onClick={() => setUnregAlert(null)}
+                className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+              >
+                我知道了
+              </button>
+              <button
+                type="button"
+                onClick={() => { setUnregAlert(null); router.push('/unregistered'); }}
+                className="px-5 py-2 text-sm font-medium rounded-md bg-amber-500 text-white hover:bg-amber-600 transition-colors"
+              >
+                前往未录入页面
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ===== 新建订单弹窗 ===== */}
       {createOpen && (
@@ -727,7 +894,7 @@ function CreateOrderModal({ onClose, onConfirm }: CreateOrderModalProps) {
                 className={FORM_INPUT}
               />
             </FormField>
-            <FormField label="PO数量">
+            <FormField label="SKU数量">
               <input
                 type="number"
                 min="0"

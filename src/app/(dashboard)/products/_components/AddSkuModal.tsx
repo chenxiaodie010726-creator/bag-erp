@@ -220,9 +220,9 @@ export default function AddSkuModal({ open, product, onClose, onConfirm }: AddSk
                 <span className="text-xs text-gray-400 shrink-0">{presetName}</span>
               )}
             </div>
-            {/* 颜色中文名称 */}
+            {/* 中文颜色名称（可选） */}
             <div className="mt-2 flex items-center gap-2">
-              <label className="text-xs text-gray-500 shrink-0 w-20">颜色中文名</label>
+              <label className="text-xs text-gray-500 shrink-0 w-20">中文名</label>
               <input
                 type="text"
                 value={colorNameZh}

@@ -7,6 +7,7 @@
  * 出库列：列间竖线（border-r）；横向滚动条由外层 overflow-x-auto 提供
  * ============================================================ */
 
+import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import type { PoGroupData } from './mockData';
 
@@ -51,6 +52,10 @@ const DYNAMIC_COL_WIDTH = Math.round(116 * 1.5);
 const TRAIL_WO = 110;
 const TRAIL_PATTERN = 88;
 const RAIL_W = 44;
+
+function outboundDisplayLabel(shipmentNo: string | null | undefined): string {
+  return shipmentNo?.trim() ? shipmentNo.trim() : '未填写';
+}
 
 export default function PoGroup({ data, selectedIds, onToggleItem, onToggleGroupAll }: PoGroupProps) {
   const [expanded, setExpanded] = useState(true);
@@ -210,16 +215,38 @@ export default function PoGroup({ data, selectedIds, onToggleItem, onToggleGroup
                     剩余库存
                   </th>
 
-                  {data.columns.map((col) => (
-                    <th
-                      key={col.key}
-                      style={{ width: DYNAMIC_COL_WIDTH, minWidth: DYNAMIC_COL_WIDTH }}
-                      className={`${shipmentCellClass} text-center`}
-                    >
-                      <div className="text-xs font-medium text-gray-700">{col.date}</div>
-                      <div className="text-xs text-gray-400 mt-0.5">{col.shipmentNo}</div>
-                    </th>
-                  ))}
+                  {data.columns.map((col) => {
+                    const hasOutbound = !!col.shipmentNo?.trim();
+                    const label = outboundDisplayLabel(col.shipmentNo);
+                    return (
+                      <th
+                        key={col.key}
+                        style={{ width: DYNAMIC_COL_WIDTH, minWidth: DYNAMIC_COL_WIDTH }}
+                        className={`${shipmentCellClass} text-center`}
+                      >
+                        <div className="text-xs font-medium text-gray-700">{col.date}</div>
+                        <div
+                          className={[
+                            'text-xs mt-0.5',
+                            hasOutbound ? 'text-gray-600' : 'text-amber-600 font-medium',
+                          ].join(' ')}
+                          title={hasOutbound ? label : '客户出库号尚未回填'}
+                        >
+                          {label}
+                        </div>
+                        <Link
+                          href={
+                            hasOutbound
+                              ? `/packing-list?shipment=${encodeURIComponent(col.shipmentNo!)}`
+                              : `/packing-list?po=${encodeURIComponent(data.poNumber)}`
+                          }
+                          className="text-[10px] text-blue-500 hover:underline block mt-1"
+                        >
+                          查看装箱单
+                        </Link>
+                      </th>
+                    );
+                  })}
 
                   {prodMetaOpen && (
                     <>

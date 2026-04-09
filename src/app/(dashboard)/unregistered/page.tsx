@@ -5,36 +5,34 @@
  * 展示导入订单时发现的、不在产品列表/套装列表中的 SKU
  * ============================================================ */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { STORAGE_KEYS } from '@/lib/storageKeys';
 import type { UnregisteredSkuEntry } from '@/lib/orderInventorySync';
-
-function load(): UnregisteredSkuEntry[] {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEYS.UNREGISTERED_SKUS);
-    return stored ? JSON.parse(stored) : [];
-  } catch {
-    return [];
-  }
-}
-
-function save(data: UnregisteredSkuEntry[]) {
-  try {
-    localStorage.setItem(STORAGE_KEYS.UNREGISTERED_SKUS, JSON.stringify(data));
-  } catch { /* quota */ }
-}
+import {
+  computeUnregisteredSkuEntriesFromOrders,
+  dismissUnregisteredEntry,
+  clearDismissedUnregisteredEntries,
+  loadDismissedUnregisteredIds,
+} from '@/lib/unregisteredSkuCompute';
 
 export default function UnregisteredPage() {
   const router = useRouter();
   const [items, setItems] = useState<UnregisteredSkuEntry[]>([]);
   const [search, setSearch] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  /** 递增以触发从订单重算未录入列表 */
+  const [listTick, setListTick] = useState(0);
+
+  const refreshList = useCallback(() => {
+    const all = computeUnregisteredSkuEntriesFromOrders();
+    const dismissed = loadDismissedUnregisteredIds();
+    setItems(all.filter((e) => !dismissed.has(e.id)));
+  }, []);
 
   useEffect(() => {
-    setItems(load());
-  }, []);
+    refreshList();
+  }, [listTick, refreshList]);
 
   /* ===== 筛选 ===== */
   const filtered = useMemo(() => {
@@ -78,22 +76,28 @@ export default function UnregisteredPage() {
     });
   }
 
-  /* ===== 批量删除（标记为已处理） ===== */
+  /* ===== 批量忽略（本页不再显示，直至 SKU 登记或清除忽略） ===== */
   function handleDelete() {
     if (selectedIds.size === 0) return;
-    const remaining = items.filter((i) => !selectedIds.has(i.id));
-    setItems(remaining);
-    save(remaining);
+    selectedIds.forEach((id) => dismissUnregisteredEntry(id));
     setSelectedIds(new Set());
+    setListTick((t) => t + 1);
   }
 
-  /* ===== 单个删除 ===== */
   function handleDeleteOne(id: string) {
-    const remaining = items.filter((i) => i.id !== id);
-    setItems(remaining);
-    save(remaining);
-    selectedIds.delete(id);
-    setSelectedIds(new Set(selectedIds));
+    dismissUnregisteredEntry(id);
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setListTick((t) => t + 1);
+  }
+
+  function handleClearDismissed() {
+    if (!confirm('确定清除所有「已忽略」记录？清除后，被隐藏的未登记 SKU 会重新显示（若仍未在产品中登记）。')) return;
+    clearDismissedUnregisteredEntries();
+    setListTick((t) => t + 1);
   }
 
   /* ===== 按 PO 号分组统计 ===== */
@@ -117,7 +121,9 @@ export default function UnregisteredPage() {
             <span className="text-gray-700 font-medium">未录入 SKU</span>
           </div>
           <h1 className="text-xl font-bold text-gray-800">未录入 SKU</h1>
-          <p className="text-sm text-gray-400 mt-0.5">订单中发现的、尚未在产品列表或套装列表中登记的 SKU</p>
+          <p className="text-sm text-gray-400 mt-0.5">
+            自动比对「客户订单」各单明细中的 SKU 与「产品列表 / 套装列表」；凡订单中有而库中无的 SKU 会出现在此表（与订单总览、产品列表数据联动）。
+          </p>
         </div>
       </div>
 
@@ -162,10 +168,22 @@ export default function UnregisteredPage() {
         )}
 
         <button
-          onClick={() => { setItems(load()); setSearch(''); }}
+          type="button"
+          onClick={() => {
+            setSearch('');
+            setListTick((t) => t + 1);
+          }}
           className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors"
         >
           <RefreshIcon /> 刷新
+        </button>
+        <button
+          type="button"
+          onClick={handleClearDismissed}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-violet-700 border border-violet-200 rounded-md hover:bg-violet-50 transition-colors"
+          title="恢复被「删除」隐藏的未登记项"
+        >
+          清除忽略
         </button>
       </div>
 
@@ -198,8 +216,11 @@ export default function UnregisteredPage() {
                 <tr>
                   <td colSpan={9} className="text-center py-16 text-gray-400">
                     <div className="text-4xl mb-3">✅</div>
-                    <p className="text-sm font-medium text-gray-600">所有 SKU 均已录入</p>
-                    <p className="text-xs text-gray-400 mt-1">没有发现未在产品列表中登记的 SKU</p>
+                    <p className="text-sm font-medium text-gray-600">当前没有待处理的未登记 SKU</p>
+                    <p className="text-xs text-gray-400 mt-1 max-w-md mx-auto">
+                      说明：系统已根据订单明细与产品/套装库比对。若订单里的 SKU 在产品列表搜不到，应出现在此表；
+                      若仍为空，可能是该 SKU 已在套装或产品子 SKU 中登记，或订单明细尚未保存。可点击「刷新」重算。
+                    </p>
                   </td>
                 </tr>
               ) : (
@@ -236,9 +257,19 @@ export default function UnregisteredPage() {
                     <td className="px-4 py-2 text-center">
                       <div className="flex items-center justify-center gap-2">
                         <button
-                          onClick={() => router.push(`/products?addSku=${encodeURIComponent(item.sku)}`)}
+                          type="button"
+                          onClick={() => {
+                            const q = new URLSearchParams({
+                              fromOrder: '1',
+                              sku: item.sku,
+                              styleName: item.styleName,
+                              colorName: item.colorName,
+                              unitPrice: String(item.unitPrice),
+                            });
+                            router.push(`/products?${q.toString()}`);
+                          }}
                           className="text-xs text-blue-500 hover:text-blue-700 hover:underline"
-                          title="添加到产品列表"
+                          title="打开新建产品并带入订单中的 SKU、颜色与单价（大货价）"
                         >
                           录入
                         </button>

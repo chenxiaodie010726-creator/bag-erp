@@ -7,8 +7,11 @@
 'use client';
 
 import { useState } from 'react';
+import { useAuth } from '@/components/auth/AuthProvider';
 import type { SkuItem } from './mockData';
-import { COLOR_MAP, COLOR_NAME_MAP, COLOR_NAME_ZH_MAP } from './mockData';
+import { COLOR_NAME_MAP, COLOR_NAME_ZH_MAP } from './mockData';
+import { resolveHexForProductSku } from '@/lib/colorDisplay';
+import { useColorRegistry } from '@/hooks/useColorRegistry';
 
 const LIGHT_PRESET_SKU = new Set(['WHT', 'CRM', 'LPK', 'LBL', 'BGE']);
 function isLightHexSku(hex: string): boolean {
@@ -20,8 +23,12 @@ function isLightHexSku(hex: string): boolean {
     return (r * 299 + g * 587 + b * 114) / 1000 > 200;
   } catch { return false; }
 }
-function resolveSkuHex(colorCode: string): string {
-  return COLOR_MAP[colorCode] ?? (colorCode.startsWith('#') ? colorCode : '#9ca3af');
+function skuColorEnLabel(sku: SkuItem): string {
+  if (sku.colorCode.startsWith('#')) return sku.colorCode;
+  if (COLOR_NAME_MAP[sku.colorCode]) return COLOR_NAME_MAP[sku.colorCode];
+  const phrase = sku.colorPhrase?.trim();
+  if (phrase) return phrase;
+  return sku.colorCode;
 }
 
 interface SkuSubTableProps {
@@ -45,6 +52,8 @@ export default function SkuSubTable({
   onBulkModifySkus,
   onUpdateSku,
 }: SkuSubTableProps) {
+  const { showPrice } = useAuth();
+  const colorRegistry = useColorRegistry();
   const thCls = 'px-3 py-2.5 text-left text-xs font-medium text-gray-500 whitespace-nowrap';
   const tdCls = 'px-3 py-2.5 text-sm text-gray-700 whitespace-nowrap';
   const normalizedTerms = highlightTerms.map((t) => t.trim().toLowerCase()).filter(Boolean);
@@ -103,10 +112,10 @@ export default function SkuSubTable({
               <th className={`${thCls} w-12`}>图</th>
               <th className={thCls}>SKU</th>
               <th className={thCls}>Color</th>
-              <th className={thCls}>颜色中文</th>
+              <th className={thCls}>颜色</th>
               <th className={`${thCls} text-right`}>库存</th>
-              <th className={`${thCls} text-right`}>大货价</th>
-              <th className={`${thCls} text-right`}>一件代发价</th>
+              {showPrice && <th className={`${thCls} text-right`}>大货价</th>}
+              {showPrice && <th className={`${thCls} text-right`}>一件代发价</th>}
               <th className={thCls}>状态</th>
               <th className={thCls}>更新时间 ↕</th>
               <th className={`${thCls} w-16`}>操作</th>
@@ -114,10 +123,8 @@ export default function SkuSubTable({
           </thead>
           <tbody className="divide-y divide-gray-100">
             {skus.map((sku) => {
-              const hex = resolveSkuHex(sku.colorCode);
-              /** Color 列：只展示英文全名（如 Black），不展示缩写 BLK */
-              const colorLabelEn =
-                COLOR_NAME_MAP[sku.colorCode] ?? sku.colorCode;
+              const hex = resolveHexForProductSku(sku, colorRegistry);
+              const colorEn = skuColorEnLabel(sku);
               const colorLabelMono = sku.colorCode.startsWith('#');
               const isLight = LIGHT_PRESET_SKU.has(sku.colorCode) || isLightHexSku(hex);
               const isMatched =
@@ -191,12 +198,12 @@ export default function SkuSubTable({
                             : 'text-sm text-gray-700'
                         }
                       >
-                        {colorLabelEn}
+                        {colorEn}
                       </span>
                     </div>
                   </td>
 
-                  {/* 颜色中文 */}
+                  {/* 颜色（中文名） */}
                   <td className={tdCls}>
                     <span className="text-sm text-gray-700">
                       {sku.colorNameZh ?? COLOR_NAME_ZH_MAP[sku.colorCode] ?? '—'}
@@ -207,10 +214,10 @@ export default function SkuSubTable({
                   <td className={`${tdCls} text-right font-mono`}>{sku.stock}</td>
 
                   {/* 大货价 */}
-                  <td className={`${tdCls} text-right font-mono`}>${sku.bulkPrice.toFixed(2)}</td>
+                  {showPrice && <td className={`${tdCls} text-right font-mono`}>${sku.bulkPrice.toFixed(2)}</td>}
 
                   {/* 一件代发价 */}
-                  <td className={`${tdCls} text-right font-mono`}>${sku.dropshipPrice.toFixed(2)}</td>
+                  {showPrice && <td className={`${tdCls} text-right font-mono`}>${sku.dropshipPrice.toFixed(2)}</td>}
 
                   {/* 状态 */}
                   <td className={tdCls}>

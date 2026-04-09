@@ -1,7 +1,11 @@
 import type { OrderDetailData } from '@/app/(dashboard)/orders/[id]/_components/mockData';
 import type { OrderItem } from '@/app/(dashboard)/orders/_components/mockData';
 import type { PoGroupData, SkuItem } from '@/app/(dashboard)/inventory/_components/mockData';
+import { COLOR_NAME_ZH_MAP, MOCK_PRODUCTS } from '@/app/(dashboard)/products/_components/mockData';
+import type { ProductListItem } from '@/app/(dashboard)/products/_components/mockData';
+import { guessColorCodeFromSku } from '@/lib/colorDisplay';
 import { STORAGE_KEYS } from './storageKeys';
+import { loadInventoryFromStorage } from './inventoryStorage';
 import { findUnregisteredSkus } from './skuLookup';
 
 export interface UnregisteredSkuEntry {
@@ -18,12 +22,25 @@ export interface UnregisteredSkuEntry {
 }
 
 function loadInventory(): PoGroupData[] {
+  return loadInventoryFromStorage();
+}
+
+function loadProducts(): ProductListItem[] {
+  if (typeof window === 'undefined') return MOCK_PRODUCTS;
   try {
-    const stored = localStorage.getItem(STORAGE_KEYS.INVENTORY);
-    return stored ? JSON.parse(stored) : [];
-  } catch {
-    return [];
+    const raw = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return MOCK_PRODUCTS;
+}
+
+function lookupProductImage(sku: string, products: ProductListItem[]): string | null {
+  for (const p of products) {
+    if (p.skus.some((s) => s.skuName.toUpperCase() === sku.toUpperCase())) {
+      return p.imageUrl;
+    }
   }
+  return null;
 }
 
 function saveInventory(data: PoGroupData[]) {
@@ -89,22 +106,31 @@ export function syncOrderToInventory(
 
   /* ---- Create/update inventory entry for this PO ---- */
   const inventory = loadInventory();
+  const products = loadProducts();
   const existingIdx = inventory.findIndex(
     (po) => po.poNumber.toUpperCase() === order.poNumber.toUpperCase()
   );
 
-  const items: SkuItem[] = detail.items.map((item, idx) => ({
-    id: `${order.id}-inv-${idx}`,
-    wo: null,
-    patternCode: null,
-    imageUrl: null,
-    sku: item.sku,
-    totalQty: item.quantity,
-    receivedQty: 0,
-    remaining: 0,
-    customerCode: null,
-    shipments: {},
-  }));
+  const items: SkuItem[] = detail.items.map((item, idx) => {
+    const code = guessColorCodeFromSku(item.sku);
+    const zh = code && COLOR_NAME_ZH_MAP[code] ? COLOR_NAME_ZH_MAP[code] : null;
+    return {
+      id: `${order.id}-inv-${idx}`,
+      wo: null,
+      patternCode: null,
+      imageUrl: lookupProductImage(item.sku, products),
+      sku: item.sku,
+      colorCode: code,
+      colorNameEn: item.colorName?.trim() || null,
+      colorNameZh: zh,
+      totalQty: item.quantity,
+      receivedQty: 0,
+      remaining: 0,
+      customerCode: null,
+      factoryName: null,
+      shipments: {},
+    };
+  });
 
   const poGroup: PoGroupData = {
     poNumber: order.poNumber,

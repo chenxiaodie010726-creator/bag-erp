@@ -268,10 +268,14 @@ export async function parseInventoryExcel(file: File): Promise<ParseResult> {
               patternCode: null,
               imageUrl: null,
               sku: r.sku,
+              colorCode: null,
+              colorNameEn: null,
+              colorNameZh: null,
               totalQty: r.totalQty,
               receivedQty,
               remaining,
               customerCode: r.customerCode,
+              factoryName: null,
               shipments,
             };
           });
