@@ -14,7 +14,7 @@ import ImportOrderDetailModal from './_components/ImportOrderDetailModal';
 import { MOCK_ORDERS } from './_components/mockData';
 import type { OrderItem, OrderStatus } from './_components/mockData';
 import { getOrderDetail } from '@/app/(dashboard)/orders/[id]/_components/mockData';
-import type { OrderDetailData } from '@/app/(dashboard)/orders/[id]/_components/mockData';
+import type { OrderDetailData, OrderDetailItem } from '@/app/(dashboard)/orders/[id]/_components/mockData';
 import { syncOrderToInventory, type UnregisteredSkuEntry } from '@/lib/orderInventorySync';
 import { STORAGE_KEYS } from '@/lib/storageKeys';
 import { useRouter } from 'next/navigation';
@@ -242,7 +242,12 @@ export default function OrdersPage() {
       allUnreg.push(...unregisteredSkus);
     }
 
-    setOrders((prev) => prev.map((o) => mergedById.get(o.id) ?? o));
+    setOrders((prev) => {
+      const existingIds = new Set(prev.map((o) => o.id));
+      const updated = prev.map((o) => mergedById.get(o.id) ?? o);
+      const inserted = [...mergedById.values()].filter((o) => !existingIds.has(o.id));
+      return inserted.length > 0 ? [...inserted, ...updated] : updated;
+    });
     if (allUnreg.length > 0) setUnregAlert(allUnreg);
     setPage(1);
   }
@@ -650,7 +655,12 @@ export default function OrdersPage() {
       {createOpen && (
         <CreateOrderModal
           onClose={() => setCreateOpen(false)}
-          onConfirm={(newOrder) => {
+          onConfirm={({ order: newOrder, detail }) => {
+            try {
+              localStorage.setItem(STORAGE_KEYS.ORDER_DETAIL_PREFIX + newOrder.id, JSON.stringify(detail));
+            } catch { /* quota */ }
+            const { unregisteredSkus } = syncOrderToInventory(newOrder, detail);
+            if (unregisteredSkus.length > 0) setUnregAlert(unregisteredSkus);
             setOrders((prev) => [newOrder, ...prev]);
             setCreateOpen(false);
           }}
@@ -814,23 +824,52 @@ function MonthRangeSlider({ year, startMonth, endMonth, onChangeYear, onChangeRa
 
 
 /* ============================================================
- * 新建订单弹窗
+ * 新建订单弹窗（含多行 SKU 明细，与订单详情结构一致）
  * ============================================================ */
 interface CreateOrderModalProps {
   onClose: () => void;
-  onConfirm: (order: OrderItem) => void;
+  onConfirm: (payload: { order: OrderItem; detail: OrderDetailData }) => void;
+}
+
+interface DraftLine {
+  id: string;
+  sku: string;
+  colorName: string;
+  styleName: string;
+  unitPrice: string;
+  quantity: string;
+}
+
+function newDraftLine(): DraftLine {
+  return {
+    id: `dl_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+    sku: '',
+    colorName: '',
+    styleName: '',
+    unitPrice: '',
+    quantity: '',
+  };
 }
 
 function CreateOrderModal({ onClose, onConfirm }: CreateOrderModalProps) {
   const [form, setForm] = useState({
     poNumber: '',
-    amount: '',
-    poQty: '',
     batches: '1',
     status: '待确认' as OrderStatus,
     orderDate: new Date().toISOString().slice(0, 10),
     customerName: '',
   });
+  const [lines, setLines] = useState<DraftLine[]>(() => [newDraftLine()]);
+
+  const computedAmount = useMemo(() => {
+    let s = 0;
+    for (const l of lines) {
+      const p = parseFloat(l.unitPrice) || 0;
+      const q = parseInt(l.quantity, 10) || 0;
+      s += p * q;
+    }
+    return s;
+  }, [lines]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -838,31 +877,69 @@ function CreateOrderModal({ onClose, onConfirm }: CreateOrderModalProps) {
       alert('请填写 PO号 和 客户名称');
       return;
     }
+    const batchNum = Math.max(1, Math.min(12, parseInt(form.batches, 10) || 1));
+    const shipmentDates = Array.from({ length: batchNum }, (_, i) => `批次${i + 1}`);
+
+    const validLines = lines.filter((l) => {
+      const sku = l.sku.trim();
+      const q = parseInt(l.quantity, 10) || 0;
+      return sku.length > 0 && q > 0;
+    });
+    if (validLines.length === 0) {
+      alert('请至少添加一行有效明细：填写 SKU 与数量（大于 0）');
+      return;
+    }
+
+    const orderId = `created_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const items: OrderDetailItem[] = validLines.map((l, idx) => {
+      const qty = parseInt(l.quantity, 10) || 0;
+      const unitPrice = parseFloat(l.unitPrice) || 0;
+      return {
+        id: `${orderId}_line_${idx}`,
+        sku: l.sku.trim(),
+        colorName: l.colorName.trim(),
+        styleName: l.styleName.trim(),
+        unitPrice,
+        quantity: qty,
+        shipments: shipmentDates.map((date, bi) => ({ date, qty: bi === 0 ? qty : null })),
+        remarks: '',
+      };
+    });
+
+    const detail: OrderDetailData = { shipmentDates, items };
+    const amount = items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
+
     onConfirm({
-      id: `created_${Date.now()}`,
-      poNumber: form.poNumber.trim(),
-      amount: parseFloat(form.amount) || 0,
-      poQty: parseInt(form.poQty, 10) || 0,
-      batches: parseInt(form.batches, 10) || 1,
-      status: form.status,
-      orderDate: form.orderDate,
-      customerName: form.customerName.trim(),
+      order: {
+        id: orderId,
+        poNumber: form.poNumber.trim(),
+        amount,
+        poQty: items.length,
+        batches: batchNum,
+        status: form.status,
+        orderDate: form.orderDate,
+        customerName: form.customerName.trim(),
+      },
+      detail,
     });
   }
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="w-full max-w-md bg-white rounded-xl shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-          <h2 className="text-base font-semibold text-gray-800">新建订单</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+      <div className="w-full max-w-3xl max-h-[92vh] bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 flex-shrink-0">
+          <div>
+            <h2 className="text-base font-semibold text-gray-800">新建订单</h2>
+            <p className="text-xs text-gray-400 mt-0.5">填写订单头信息后，在下方添加多行 SKU（与订单详情页一致）</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
         </div>
 
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+        <form onSubmit={handleSubmit} className="px-6 py-4 space-y-4 overflow-y-auto flex-1 min-h-0">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <FormField label="PO号 *">
               <input
                 required
@@ -883,34 +960,13 @@ function CreateOrderModal({ onClose, onConfirm }: CreateOrderModalProps) {
                 className={FORM_INPUT}
               />
             </FormField>
-            <FormField label="订单金额 (USD)">
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                placeholder="0.00"
-                value={form.amount}
-                onChange={(e) => setForm({ ...form, amount: e.target.value })}
-                className={FORM_INPUT}
-              />
-            </FormField>
-            <FormField label="SKU数量">
-              <input
-                type="number"
-                min="0"
-                placeholder="0"
-                value={form.poQty}
-                onChange={(e) => setForm({ ...form, poQty: e.target.value })}
-                className={FORM_INPUT}
-              />
-            </FormField>
             <FormField label="分批">
               <select
                 value={form.batches}
                 onChange={(e) => setForm({ ...form, batches: e.target.value })}
                 className={FORM_INPUT}
               >
-                {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}批</option>)}
+                {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}批</option>)}
               </select>
             </FormField>
             <FormField label="订单状态">
@@ -926,17 +982,123 @@ function CreateOrderModal({ onClose, onConfirm }: CreateOrderModalProps) {
                 <option value="已取消">已取消</option>
               </select>
             </FormField>
+            <FormField label="订单日期">
+              <input
+                type="date"
+                value={form.orderDate}
+                onChange={(e) => setForm({ ...form, orderDate: e.target.value })}
+                className={FORM_INPUT}
+              />
+            </FormField>
           </div>
-          <FormField label="订单日期">
-            <input
-              type="date"
-              value={form.orderDate}
-              onChange={(e) => setForm({ ...form, orderDate: e.target.value })}
-              className={FORM_INPUT}
-            />
-          </FormField>
 
-          <div className="flex items-center justify-end gap-3 pt-2">
+          <div className="border border-gray-200 rounded-lg overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-b border-gray-200">
+              <span className="text-xs font-semibold text-gray-700">产品明细</span>
+              <button
+                type="button"
+                onClick={() => setLines((prev) => [...prev, newDraftLine()])}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+              >
+                + 添加一行
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[640px]">
+                <thead>
+                  <tr className="bg-white border-b border-gray-100 text-left text-xs text-gray-500">
+                    <th className="px-2 py-2 font-medium w-[28%]">SKU *</th>
+                    <th className="px-2 py-2 font-medium w-[18%]">颜色</th>
+                    <th className="px-2 py-2 font-medium w-[22%]">Style Name</th>
+                    <th className="px-2 py-2 font-medium w-[12%]">单价(USD)</th>
+                    <th className="px-2 py-2 font-medium w-[10%]">数量 *</th>
+                    <th className="px-2 py-2 font-medium w-[10%] text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((row) => (
+                    <tr key={row.id} className="border-b border-gray-50 align-top">
+                      <td className="px-2 py-1.5">
+                        <input
+                          type="text"
+                          placeholder="SKU"
+                          value={row.sku}
+                          onChange={(e) => setLines((prev) => prev.map((r) => (r.id === row.id ? { ...r, sku: e.target.value } : r)))}
+                          className={FORM_INPUT}
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input
+                          type="text"
+                          placeholder="颜色"
+                          value={row.colorName}
+                          onChange={(e) => setLines((prev) => prev.map((r) => (r.id === row.id ? { ...r, colorName: e.target.value } : r)))}
+                          className={FORM_INPUT}
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input
+                          type="text"
+                          placeholder="可选"
+                          value={row.styleName}
+                          onChange={(e) => setLines((prev) => prev.map((r) => (r.id === row.id ? { ...r, styleName: e.target.value } : r)))}
+                          className={FORM_INPUT}
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          placeholder="0"
+                          value={row.unitPrice}
+                          onChange={(e) => setLines((prev) => prev.map((r) => (r.id === row.id ? { ...r, unitPrice: e.target.value } : r)))}
+                          className={FORM_INPUT}
+                        />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          placeholder="0"
+                          value={row.quantity}
+                          onChange={(e) => setLines((prev) => prev.map((r) => (r.id === row.id ? { ...r, quantity: e.target.value } : r)))}
+                          className={FORM_INPUT}
+                        />
+                      </td>
+                      <td className="px-2 py-1.5 text-right">
+                        <button
+                          type="button"
+                          disabled={lines.length <= 1}
+                          onClick={() => setLines((prev) => prev.filter((r) => r.id !== row.id))}
+                          className={[
+                            'text-xs',
+                            lines.length <= 1 ? 'text-gray-300 cursor-not-allowed' : 'text-red-500 hover:text-red-700',
+                          ].join(' ')}
+                        >
+                          删除
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-4 text-sm text-gray-600 bg-gray-50 rounded-lg px-3 py-2">
+            <span>
+              明细行数：<strong className="text-gray-900">{lines.filter((l) => l.sku.trim() && (parseInt(l.quantity, 10) || 0) > 0).length}</strong>
+            </span>
+            <span className="text-gray-300">|</span>
+            <span>
+              订单金额合计 (USD)：<strong className="text-gray-900">{computedAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+            </span>
+            <span className="text-xs text-gray-400">（由各行 单价×数量 自动汇总）</span>
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-1">
             <button
               type="button"
               onClick={onClose}

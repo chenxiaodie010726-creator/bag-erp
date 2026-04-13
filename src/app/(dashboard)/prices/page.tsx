@@ -6,17 +6,26 @@
  * URL: /prices
  * ============================================================ */
 
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useUndoManager, useUndoKeyboard } from '@/hooks/useUndoManager';
 import UndoToast from '@/components/UndoToast';
 import {
   ALL_MOCK_PRICES,
   MATERIAL_PRICE_COLUMNS,
+  MATERIAL_FABRIC_TABLE_HEADERS,
   PROCESS_PRICE_COLUMNS,
   BRANDS,
   CATEGORY_SUBCATEGORIES,
+  isMaterialTextileStyleCategory,
+  PRICE_COLOR_CATEGORY_PRESETS,
+  priceDuplicateKey,
 } from './_components/mockData';
 import type { PriceItem, PriceTab, PriceStatus } from './_components/mockData';
+import {
+  sortPricesForMergeDisplay,
+  packPriceRowsIntoPages,
+  computeCodeNameMergeMeta,
+} from './_components/priceTableUtils';
 import type { SupplierCategory, SupplierItem } from '../suppliers/_components/mockData';
 import {
   SUPPLIER_CATEGORIES_MATERIAL,
@@ -24,6 +33,12 @@ import {
   MOCK_SUPPLIERS,
 } from '../suppliers/_components/mockData';
 import { STORAGE_KEYS } from '@/lib/storageKeys';
+import {
+  downloadHardwarePriceImportTemplate,
+  parseHardwarePriceWorkbook,
+  parsedHardwareRowsToPriceItems,
+} from '@/lib/hardwarePriceImport';
+import { hardwarePriceMatchesSearchText } from '@/lib/hardwarePriceSynonyms';
 
 /** 价格表用到的供应商 chip 结构 */
 interface PriceSupplier { id: string; name: string; }
@@ -58,8 +73,6 @@ export default function PricesPage() {
 
   /* ===== Tab ===== */
   const [activeTab, setActiveTab] = useState<PriceTab>('物料');
-
-  const priceColumns = activeTab === '物料' ? MATERIAL_PRICE_COLUMNS : PROCESS_PRICE_COLUMNS;
 
   /* ===== 供应商数据：从 localStorage 读取，与供应商列表页共享 ===== */
   const [allSuppliers, setAllSuppliers] = useState<SupplierItem[]>(MOCK_SUPPLIERS);
@@ -114,6 +127,24 @@ export default function PricesPage() {
 
   /* ===== 快捷子分类（二级，仅部分一级分类有） ===== */
   const [quickSubCategory, setQuickSubCategory] = useState('全部');
+
+  /** 筛选到面料/里布/面布等布类时，表头为常规价/其他/幅宽；其它物料分类仍为浅金/白呖三档 */
+  const isTextileStyleMaterialView =
+    activeTab === '物料' &&
+    (isMaterialTextileStyleCategory(quickCategory) || isMaterialTextileStyleCategory(filterCategory));
+
+  const priceColumns = useMemo(() => {
+    if (activeTab === '工艺') return PROCESS_PRICE_COLUMNS;
+    return isTextileStyleMaterialView ? MATERIAL_FABRIC_TABLE_HEADERS : MATERIAL_PRICE_COLUMNS;
+  }, [activeTab, isTextileStyleMaterialView]);
+
+  /** 五金等：展示「颜色/规格」列（布类用幅宽列，不重复） */
+  const showColorSpecColumn = activeTab === '物料' && !isTextileStyleMaterialView;
+
+  /** 五金专用：同义词列 */
+  const showSynonymsColumn = activeTab === '物料' && quickCategory === '五金';
+
+  const importHardwareInputRef = useRef<HTMLInputElement>(null);
 
   /** 当前一级分类对应的子分类列表，无则为空数组 */
   const currentSubCategories: string[] = useMemo(
@@ -228,8 +259,7 @@ export default function PricesPage() {
     return prices.filter((p) => {
       if (p.tab !== activeTab) return false;
       if (searchText) {
-        const q = searchText.toLowerCase();
-        if (!p.name.toLowerCase().includes(q) && !p.code.toLowerCase().includes(q)) return false;
+        if (!hardwarePriceMatchesSearchText(p, searchText)) return false;
       }
       if (filterCategory !== '全部' && p.category !== filterCategory) return false;
       if (filterType !== '全部' && p.materialType !== filterType) return false;
@@ -252,11 +282,29 @@ export default function PricesPage() {
     });
   }, [prices, activeTab, searchText, filterCategory, filterType, filterSpec, filterBrand, filterSupplier, filterStatus, quickCategory, quickSubCategory, quickSupplier, allTabSuppliers, supplierList]);
 
+  const sortedFilteredPrices = useMemo(
+    () => sortPricesForMergeDisplay(filteredPrices),
+    [filteredPrices],
+  );
+
+  const priceTablePages = useMemo(
+    () => packPriceRowsIntoPages(sortedFilteredPrices, pageSize),
+    [sortedFilteredPrices, pageSize],
+  );
+
+  const totalPages = Math.max(1, priceTablePages.length);
+  const pageItems = priceTablePages[page - 1] ?? [];
+
+  const codeNameMergeMeta = useMemo(
+    () => computeCodeNameMergeMeta(pageItems),
+    [pageItems],
+  );
+
   useEffect(() => { setPage(1); }, [filteredPrices]);
 
-  /* ===== 分页 ===== */
-  const totalPages = Math.max(1, Math.ceil(filteredPrices.length / pageSize));
-  const pageItems = filteredPrices.slice((page - 1) * pageSize, page * pageSize);
+  useEffect(() => {
+    setPage((p) => Math.min(p, totalPages));
+  }, [totalPages]);
 
   /* ===== 重置 ===== */
   function handleReset() {
@@ -330,8 +378,76 @@ export default function PricesPage() {
 
   /* ===== 导出(fake) ===== */
   const handleExport = useCallback(() => { alert(`即将导出 ${filteredPrices.length} 条数据（功能待接入）`); }, [filteredPrices.length]);
-  const handleDownloadTemplate = useCallback(() => { alert('下载导入模板（功能待接入）'); }, []);
-  const handleImport = useCallback(() => { alert('导入价格表（功能待接入）'); }, []);
+  const handleDownloadTemplate = useCallback(() => {
+    if (activeTab === '物料' && quickCategory === '五金') {
+      downloadHardwarePriceImportTemplate();
+      return;
+    }
+    const headers = [
+      '编号', '名称', 'color_category', '类型', '分类', '子分类', '单位', '规格', '品牌',
+      'price1', 'price2', 'price3', 'fabric_width', '备注',
+    ];
+    const example = [
+      'LCK-001', 'YKK金属拉链头3#', '黑色', '拉链头', '五金', '拉头', '个', '3#', 'YKK',
+      '1.20', '1.60', '1.85', '', '',
+    ];
+    const BOM = '\uFEFF';
+    const csv = `${BOM}${headers.join(',')}\n${example.map((c) => (c.includes(',') ? `"${c}"` : c)).join(',')}\n`;
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'price-import-template.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, [activeTab, quickCategory]);
+
+  const handleImport = useCallback(() => {
+    if (activeTab !== '物料') {
+      alert('当前仅支持导入「物料价格表」。请切换到物料后再试。');
+      return;
+    }
+    importHardwareInputRef.current?.click();
+  }, [activeTab]);
+
+  const handleHardwareImportFile = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+        alert('请上传 .xlsx 或 .xls 文件');
+        return;
+      }
+      const buf = await file.arrayBuffer();
+      const parsed = parseHardwarePriceWorkbook(buf);
+      if (parsed.errors.length > 0 && parsed.rows.length === 0) {
+        alert(parsed.errors.map((x) => x.message).join('\n'));
+        return;
+      }
+      const { items, warnings } = parsedHardwareRowsToPriceItems(parsed.rows, allSuppliers);
+      if (items.length === 0) {
+        alert([...parsed.errors.map((x) => x.message), ...warnings].join('\n') || '没有可导入的行');
+        return;
+      }
+      const msg = [
+        `即将导入 ${items.length} 条五金价格（分类固定为「五金」，子分类默认为「特殊五金」）。`,
+        warnings.length ? `\n提示：\n${warnings.join('\n')}` : '',
+      ].join('');
+      if (!confirm(msg)) return;
+      pushUndo(`导入五金价格 ${items.length} 条`);
+      setPricesRaw((prev) => [...items, ...prev]);
+      if (parsed.errors.length || warnings.length) {
+        alert(
+          [
+            `成功导入 ${items.length} 条。`,
+            ...parsed.errors.map((x) => x.message),
+            ...warnings,
+          ].join('\n'),
+        );
+      }
+    },
+    [allSuppliers, pushUndo],
+  );
 
   /* ===== 格式化价格 ===== */
   function fmtPrice(v: number | null) {
@@ -346,6 +462,14 @@ export default function PricesPage() {
 
   return (
     <div className="flex flex-col gap-4 min-h-0">
+      <input
+        ref={importHardwareInputRef}
+        type="file"
+        accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+        className="hidden"
+        aria-hidden
+        onChange={handleHardwareImportFile}
+      />
 
       {/* ===== 面包屑 ===== */}
       <div className="flex items-center gap-1.5 text-sm text-gray-400">
@@ -672,7 +796,7 @@ export default function PricesPage() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm min-w-[960px]">
             <thead>
               <tr className="border-b border-gray-200 bg-gray-50">
                 <th className="px-4 py-3 w-10">
@@ -683,23 +807,29 @@ export default function PricesPage() {
                     className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                   />
                 </th>
-                <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap">类型</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap">图片</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap w-[88px]">类型</th>
+                <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap w-14">图片</th>
                 <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap">编号</th>
                 <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap">名称</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap">单位</th>
+                {showSynonymsColumn && (
+                  <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap max-w-[180px]">同义词</th>
+                )}
+                {showColorSpecColumn && (
+                  <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap w-[100px]">颜色/规格</th>
+                )}
+                <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap w-16">单位</th>
                 {priceColumns.map((col) => (
-                  <th key={col} className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap">{col}</th>
+                  <th key={col} className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap">{col}</th>
                 ))}
-                <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap">备注</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap">状态</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-600 whitespace-nowrap">操作</th>
+                <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap">备注</th>
+                <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap w-20">状态</th>
+                <th className="px-3 py-3 text-left font-medium text-gray-600 whitespace-nowrap w-28">操作</th>
               </tr>
             </thead>
             <tbody>
               {pageItems.length === 0 ? (
                 <tr>
-                  <td colSpan={9 + priceColumns.length} className="text-center py-16 text-gray-400">
+                  <td colSpan={9 + priceColumns.length + (showColorSpecColumn ? 1 : 0) + (showSynonymsColumn ? 1 : 0)} className="text-center py-16 text-gray-400">
                     <div className="text-4xl mb-3">📭</div>
                     <p className="text-sm">没有符合条件的价格数据</p>
                     <button onClick={handleReset} className="mt-2 text-sm text-blue-500 hover:underline">
@@ -708,108 +838,154 @@ export default function PricesPage() {
                   </td>
                 </tr>
               ) : (
-                pageItems.map((item) => (
-                  <tr key={item.id} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
-                    <td className="px-4 py-3">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(item.id)}
-                        onChange={() => toggleSelect(item.id)}
-                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                      />
-                    </td>
+                pageItems.map((item) => {
+                  const m = codeNameMergeMeta.get(item.id) ?? { showType: true, showCode: true, showName: true, span: 1 };
+                  const cc = (item.colorCategory ?? '').trim();
+                  const rowBg =
+                    cc === '黑色' ? 'bg-slate-50/80' : cc === '杂色' ? 'bg-amber-50/60' : '';
+                  return (
+                    <tr
+                      key={item.id}
+                      className={['border-b border-gray-100 hover:bg-gray-50/90 transition-colors', rowBg].join(' ')}
+                    >
+                      <td className="px-4 py-3 align-middle">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(item.id)}
+                          onChange={() => toggleSelect(item.id)}
+                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                      </td>
 
-                    {/* 类型 */}
-                    <td className="px-4 py-3 text-gray-800 whitespace-nowrap">{item.materialType}</td>
-
-                    {/* 图片 */}
-                    <td className="px-4 py-3">
-                      <div className="w-10 h-10 rounded bg-gray-100 border border-gray-200 flex items-center justify-center flex-shrink-0 overflow-hidden">
-                        {item.image ? (
-                          <img src={item.image} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <svg className="w-5 h-5 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                          </svg>
-                        )}
-                      </div>
-                    </td>
-
-                    {/* 编号 */}
-                    <td className="px-4 py-3 text-gray-500 whitespace-nowrap font-mono text-xs">{item.code}</td>
-
-                    {/* 名称 */}
-                    <td className="px-4 py-3 text-gray-800 whitespace-nowrap font-medium">{item.name}</td>
-
-                    {/* 单位 */}
-                    <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{item.unit}</td>
-
-                    {/* 价格列 */}
-                    <td className="px-4 py-3 whitespace-nowrap text-orange-600 font-medium">{fmtPrice(item.price1)}</td>
-                    <td className="px-4 py-3 whitespace-nowrap text-orange-600 font-medium">{fmtPrice(item.price2)}</td>
-                    <td className="px-4 py-3 whitespace-nowrap text-orange-600 font-medium">{fmtPrice(item.price3)}</td>
-
-                    {/* 备注 */}
-                    <td className="px-4 py-3 text-gray-500 whitespace-nowrap max-w-[140px] truncate">
-                      {item.remark || <span className="text-gray-300">-</span>}
-                    </td>
-
-                    {/* 状态 */}
-                    <td className="px-4 py-3">
-                      <span className={[
-                        'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
-                        item.status === '有效' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500',
-                      ].join(' ')}>
-                        {item.status}
-                      </span>
-                    </td>
-
-                    {/* 操作 */}
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setEditTarget(item)}
-                          className="text-sm text-blue-500 hover:text-blue-700 transition-colors"
+                      {m.showType ? (
+                        <td
+                          className="px-4 py-3 text-gray-800 whitespace-nowrap align-middle border-r border-gray-100/60"
+                          rowSpan={m.span}
                         >
-                          编辑
-                        </button>
-                        <div className="relative">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setMoreMenuId(moreMenuId === item.id ? null : item.id);
-                            }}
-                            className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
-                          >
-                            更多 ▾
-                          </button>
-                          {moreMenuId === item.id && (
-                            <div className="absolute right-0 top-full mt-1 w-28 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-20">
-                              <button
-                                onClick={(e) => { e.stopPropagation(); setDetailTarget(item); setMoreMenuId(null); }}
-                                className="w-full text-left px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
-                              >
-                                查看详情
-                              </button>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); toggleStatus(item.id); setMoreMenuId(null); }}
-                                className="w-full text-left px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
-                              >
-                                {item.status === '有效' ? '设为无效' : '设为有效'}
-                              </button>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
-                                className="w-full text-left px-3 py-1.5 text-sm text-red-500 hover:bg-red-50"
-                              >
-                                删除
-                              </button>
-                            </div>
+                          {item.materialType}
+                        </td>
+                      ) : null}
+
+                      <td className="px-4 py-3 align-middle">
+                        <div className="w-10 h-10 rounded bg-gray-100 border border-gray-200 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                          {item.image ? (
+                            <img src={item.image} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            <svg className="w-5 h-5 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
                           )}
                         </div>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                      </td>
+
+                      {m.showCode ? (
+                        <td
+                          className="px-4 py-3 text-gray-500 font-mono text-xs align-middle border-r border-gray-100/80"
+                          rowSpan={m.span}
+                        >
+                          {item.code}
+                        </td>
+                      ) : null}
+                      {m.showName ? (
+                        <td className="px-4 py-3 text-gray-800 font-medium align-middle leading-snug max-w-[200px]" rowSpan={m.span}>
+                          {item.name}
+                        </td>
+                      ) : null}
+
+                      {showSynonymsColumn && (
+                        <td className="px-3 py-3 text-gray-600 align-middle text-xs leading-snug max-w-[180px]" rowSpan={m.span}>
+                          {item.synonyms?.trim() ? item.synonyms : <span className="text-gray-300">—</span>}
+                        </td>
+                      )}
+
+                      {showColorSpecColumn && (
+                        <td className="px-3 py-3 text-gray-700 align-middle whitespace-nowrap">
+                          {cc ? <span className="font-medium">{cc}</span> : <span className="text-gray-300">—</span>}
+                        </td>
+                      )}
+
+                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap align-middle">{item.unit}</td>
+
+                      {isTextileStyleMaterialView ? (
+                        <>
+                          <td className="px-3 py-3 whitespace-nowrap text-orange-600 font-medium align-middle">{fmtPrice(item.price1)}</td>
+                          <td className="px-3 py-3 whitespace-nowrap text-orange-600 font-medium align-middle">{fmtPrice(item.price3)}</td>
+                          <td className="px-3 py-3 text-gray-600 whitespace-nowrap max-w-[120px] truncate align-middle">
+                            {item.fabricWidth?.trim() ? item.fabricWidth : <span className="text-gray-300">-</span>}
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="px-3 py-3 whitespace-nowrap text-orange-600 font-medium align-middle">{fmtPrice(item.price1)}</td>
+                          <td className="px-3 py-3 whitespace-nowrap text-orange-600 font-medium align-middle">{fmtPrice(item.price2)}</td>
+                          <td className="px-3 py-3 whitespace-nowrap text-orange-600 font-medium align-middle">{fmtPrice(item.price3)}</td>
+                        </>
+                      )}
+
+                      <td className="px-3 py-3 text-gray-500 whitespace-nowrap max-w-[120px] truncate align-middle">
+                        {item.remark || <span className="text-gray-300">-</span>}
+                      </td>
+
+                      <td className="px-3 py-3 align-middle">
+                        <span className={[
+                          'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium',
+                          item.status === '有效' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500',
+                        ].join(' ')}>
+                          {item.status}
+                        </span>
+                      </td>
+
+                      <td className="px-3 py-3 align-middle">
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditTarget(item)}
+                            className="text-sm text-blue-500 hover:text-blue-700 transition-colors"
+                          >
+                            编辑
+                          </button>
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMoreMenuId(moreMenuId === item.id ? null : item.id);
+                              }}
+                              className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
+                            >
+                              更多 ▾
+                            </button>
+                            {moreMenuId === item.id && (
+                              <div className="absolute right-0 top-full mt-1 w-28 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-20">
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setDetailTarget(item); setMoreMenuId(null); }}
+                                  className="w-full text-left px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+                                >
+                                  查看详情
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); toggleStatus(item.id); setMoreMenuId(null); }}
+                                  className="w-full text-left px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+                                >
+                                  {item.status === '有效' ? '设为无效' : '设为有效'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}
+                                  className="w-full text-left px-3 py-1.5 text-sm text-red-500 hover:bg-red-50"
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -871,6 +1047,7 @@ export default function PricesPage() {
           priceColumns={priceColumns}
           categoryList={categoryList}
           supplierList={supplierList}
+          allPrices={prices}
           onClose={() => { setCreateOpen(false); setEditTarget(null); }}
           onConfirm={(item) => {
             if (editTarget) {
@@ -891,6 +1068,7 @@ export default function PricesPage() {
         <PriceDetailModal
           item={detailTarget}
           priceColumns={priceColumns}
+          fabricMaterialDetail={detailTarget.tab === '物料' && isMaterialTextileStyleCategory(detailTarget.category)}
           onClose={() => setDetailTarget(null)}
           onEdit={() => { setEditTarget(detailTarget); setDetailTarget(null); }}
         />
@@ -921,6 +1099,7 @@ function PriceFormModal({
   priceColumns,
   categoryList,
   supplierList,
+  allPrices,
   onClose,
   onConfirm,
 }: {
@@ -930,11 +1109,22 @@ function PriceFormModal({
   priceColumns: readonly string[];
   categoryList: readonly string[];
   supplierList: PriceSupplier[];
+  allPrices: PriceItem[];
   onClose: () => void;
   onConfirm: (item: PriceItem) => void;
 }) {
   const [form, setForm] = useState(() => {
-    if (item) return { ...item, price1: item.price1 ?? '', price2: item.price2 ?? '', price3: item.price3 ?? '' };
+    if (item) {
+      return {
+        ...item,
+        price1: item.price1 ?? '',
+        price2: item.price2 ?? '',
+        price3: item.price3 ?? '',
+        fabricWidth: item.fabricWidth ?? '',
+        colorCategory: item.colorCategory ?? '',
+        synonyms: item.synonyms ?? '',
+      };
+    }
     return {
       materialType: '',
       code: '',
@@ -948,10 +1138,16 @@ function PriceFormModal({
       price1: '' as string | number | null,
       price2: '' as string | number | null,
       price3: '' as string | number | null,
+      fabricWidth: '',
+      colorCategory: '',
+      synonyms: '',
       remark: '',
       status: '有效' as PriceStatus,
     };
   });
+
+  const isTextileStyleMaterial = activeTab === '物料' && isMaterialTextileStyleCategory(form.category);
+  const showColorSpecField = activeTab === '物料' && !isTextileStyleMaterial;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -960,6 +1156,9 @@ function PriceFormModal({
       return;
     }
     const sup = supplierList.find((s) => s.id === form.supplierId);
+    const fw = form.fabricWidth?.trim() ?? '';
+    const colorTrim = (form.colorCategory ?? '').trim();
+    const synTrim = form.synonyms?.trim() ?? '';
     const result: PriceItem = {
       id: item?.id ?? `price_${Date.now()}`,
       tab: activeTab,
@@ -973,12 +1172,30 @@ function PriceFormModal({
       supplierId: form.supplierId,
       supplierName: sup?.name ?? form.supplierName ?? '',
       price1: form.price1 === '' || form.price1 === null ? null : Number(form.price1),
-      price2: form.price2 === '' || form.price2 === null ? null : Number(form.price2),
+      price2: isTextileStyleMaterial ? null : (form.price2 === '' || form.price2 === null ? null : Number(form.price2)),
       price3: form.price3 === '' || form.price3 === null ? null : Number(form.price3),
+      fabricWidth: isTextileStyleMaterial ? (fw || null) : undefined,
+      colorCategory: activeTab === '物料' && !isTextileStyleMaterial ? (colorTrim || null) : undefined,
+      synonyms: activeTab === '物料' && form.category === '五金' ? (synTrim || null) : undefined,
       remark: form.remark?.trim() ?? '',
       status: (form.status ?? '有效') as PriceStatus,
       createdAt: item?.createdAt ?? new Date().toISOString().slice(0, 10),
     };
+
+    if (activeTab === '物料' && !isTextileStyleMaterial) {
+      const k = priceDuplicateKey({ code: result.code, colorCategory: result.colorCategory });
+      const dup = allPrices.some(
+        (p) =>
+          p.tab === '物料' &&
+          p.id !== result.id &&
+          priceDuplicateKey(p) === k,
+      );
+      if (dup) {
+        alert('物料价格中「编号 + 颜色/规格」组合已存在，请调整后再保存。');
+        return;
+      }
+    }
+
     onConfirm(result);
   }
 
@@ -1007,6 +1224,22 @@ function PriceFormModal({
                 {categoryList.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </FormField>
+            {activeTab === '物料' && form.category === '五金' && (
+              <div className="col-span-2">
+                <FormField label="同义词">
+                  <textarea
+                    value={form.synonyms ?? ''}
+                    onChange={(e) => setForm({ ...form, synonyms: e.target.value })}
+                    placeholder="历史叫法，多个用逗号、顿号或分号分隔；匹配时不区分英文大小写"
+                    rows={2}
+                    className={FORM_INPUT}
+                  />
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    与颜色管理相同规则：整句或分词命中任一同义词即可；较长词优先。
+                  </p>
+                </FormField>
+              </div>
+            )}
             <FormField label="单位">
               <input value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} placeholder="个" className={FORM_INPUT} />
             </FormField>
@@ -1021,28 +1254,80 @@ function PriceFormModal({
                 {supplierList.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </FormField>
+            {showColorSpecField && (
+              <div className="col-span-2">
+                <FormField label="颜色/规格">
+                  <select
+                    value={form.colorCategory ?? ''}
+                    onChange={(e) => setForm({ ...form, colorCategory: e.target.value })}
+                    className={FORM_INPUT}
+                  >
+                    <option value="">未区分（单行）</option>
+                    {PRICE_COLOR_CATEGORY_PRESETS.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-gray-400 mt-1">与编号共同唯一；导入列名 color_category</p>
+                </FormField>
+              </div>
+            )}
           </div>
 
           <div className="border-t border-gray-100 pt-4">
             <p className="text-xs font-medium text-gray-500 mb-3">价格信息</p>
-            <div className="grid grid-cols-3 gap-4">
-              {priceColumns.map((col, idx) => {
-                const key = `price${idx + 1}` as 'price1' | 'price2' | 'price3';
-                return (
-                  <FormField key={col} label={col}>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      placeholder="0.00"
-                      value={form[key] ?? ''}
-                      onChange={(e) => setForm({ ...form, [key]: e.target.value })}
-                      className={FORM_INPUT}
-                    />
-                  </FormField>
-                );
-              })}
-            </div>
+            {isTextileStyleMaterial ? (
+              <div className="grid grid-cols-3 gap-4">
+                <FormField label="常规价">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={form.price1 ?? ''}
+                    onChange={(e) => setForm({ ...form, price1: e.target.value })}
+                    className={FORM_INPUT}
+                  />
+                </FormField>
+                <FormField label="其他">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={form.price3 ?? ''}
+                    onChange={(e) => setForm({ ...form, price3: e.target.value })}
+                    className={FORM_INPUT}
+                  />
+                </FormField>
+                <FormField label="幅宽">
+                  <input
+                    value={form.fabricWidth ?? ''}
+                    onChange={(e) => setForm({ ...form, fabricWidth: e.target.value })}
+                    placeholder="如 54英寸"
+                    className={FORM_INPUT}
+                  />
+                </FormField>
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-4">
+                {priceColumns.map((col, idx) => {
+                  const key = `price${idx + 1}` as 'price1' | 'price2' | 'price3';
+                  return (
+                    <FormField key={col} label={col}>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="0.00"
+                        value={form[key] ?? ''}
+                        onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+                        className={FORM_INPUT}
+                      />
+                    </FormField>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -1076,11 +1361,14 @@ function PriceFormModal({
 function PriceDetailModal({
   item,
   priceColumns,
+  fabricMaterialDetail,
   onClose,
   onEdit,
 }: {
   item: PriceItem;
   priceColumns: readonly string[];
+  /** 物料·面料：展示常规价/其他/幅宽 */
+  fabricMaterialDetail: boolean;
   onClose: () => void;
   onEdit: () => void;
 }) {
@@ -1095,15 +1383,31 @@ function PriceDetailModal({
           <div className="grid grid-cols-2 gap-3 text-sm">
             <DetailRow label="编号" value={item.code} />
             <DetailRow label="名称" value={item.name} />
+            {item.tab === '物料' && item.category === '五金' && (
+              <DetailRow label="同义词" value={item.synonyms?.trim() || '-'} />
+            )}
             <DetailRow label="类型" value={item.materialType} />
             <DetailRow label="分类" value={item.category} />
             <DetailRow label="单位" value={item.unit} />
             <DetailRow label="规格" value={item.spec || '-'} />
             <DetailRow label="品牌" value={item.brand || '-'} />
             <DetailRow label="供应商" value={item.supplierName} />
-            <DetailRow label={priceColumns[0]} value={item.price1 !== null ? `¥ ${item.price1!.toFixed(2)}` : '-'} />
-            <DetailRow label={priceColumns[1]} value={item.price2 !== null ? `¥ ${item.price2!.toFixed(2)}` : '-'} />
-            <DetailRow label={priceColumns[2]} value={item.price3 !== null ? `¥ ${item.price3!.toFixed(2)}` : '-'} />
+            {!fabricMaterialDetail && item.tab === '物料' && (
+              <DetailRow label="颜色/规格" value={item.colorCategory?.trim() || '-'} />
+            )}
+            {fabricMaterialDetail ? (
+              <>
+                <DetailRow label="常规价" value={item.price1 !== null ? `¥ ${item.price1!.toFixed(2)}` : '-'} />
+                <DetailRow label="其他" value={item.price3 !== null ? `¥ ${item.price3!.toFixed(2)}` : '-'} />
+                <DetailRow label="幅宽" value={item.fabricWidth?.trim() || '-'} />
+              </>
+            ) : (
+              <>
+                <DetailRow label={priceColumns[0]} value={item.price1 !== null ? `¥ ${item.price1!.toFixed(2)}` : '-'} />
+                <DetailRow label={priceColumns[1]} value={item.price2 !== null ? `¥ ${item.price2!.toFixed(2)}` : '-'} />
+                <DetailRow label={priceColumns[2]} value={item.price3 !== null ? `¥ ${item.price3!.toFixed(2)}` : '-'} />
+              </>
+            )}
             <DetailRow label="备注" value={item.remark || '-'} />
             <DetailRow label="状态" value={item.status} />
             <DetailRow label="创建日期" value={item.createdAt} />

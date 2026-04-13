@@ -7,9 +7,20 @@
  * - 价格默认引用父产品价格，可覆盖
  * ============================================================ */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import type { ProductListItem } from './mockData';
 import { COLOR_MAP, COLOR_NAME_MAP, COLOR_NAME_ZH_MAP } from './mockData';
+import {
+  loadColorRegistry,
+  normalizeHexInput,
+  COLOR_REGISTRY_CHANGED_EVENT,
+  COLOR_REGISTRY_COMMON_PRESET_LIMIT,
+  derivePresetColorCode,
+  derivePresetColorNameZh,
+  getRegistryEntriesForCommonPresets,
+  keywordsToInputLine,
+  type ColorRegistryEntry,
+} from '@/lib/colorRegistry';
 
 export interface AddSkuPayload {
   skuCode: string;
@@ -29,7 +40,6 @@ interface AddSkuModalProps {
 }
 
 const LIGHT_COLORS = new Set(['WHT', 'CRM', 'LPK', 'LBL', 'BGE']);
-const COLOR_CODES = Object.keys(COLOR_MAP);
 
 /** 获取颜色代码对应的 CSS 颜色值 */
 function resolveHex(code: string): string {
@@ -52,7 +62,23 @@ export default function AddSkuModal({ open, product, onClose, onConfirm }: AddSk
   const [colorCode, setColorCode] = useState('BLK');
   const [pickerHex, setPickerHex] = useState(COLOR_MAP['BLK']);
   const [colorNameZh, setColorNameZh] = useState(COLOR_NAME_ZH_MAP['BLK']);
+  /** 最近一次从「常用颜色」点选的注册表条目，用于高亮（与手输 code 区分） */
+  const [selectedRegistryId, setSelectedRegistryId] = useState<string | null>(null);
+  const [registryVersion, setRegistryVersion] = useState(0);
   const colorInputRef = useRef<HTMLInputElement>(null);
+
+  const commonPresets = useMemo((): ColorRegistryEntry[] => {
+    if (typeof window === 'undefined') return [];
+    return getRegistryEntriesForCommonPresets(loadColorRegistry(), COLOR_REGISTRY_COMMON_PRESET_LIMIT);
+  }, [registryVersion]);
+
+  useEffect(() => {
+    function bump() {
+      setRegistryVersion((v) => v + 1);
+    }
+    window.addEventListener(COLOR_REGISTRY_CHANGED_EVENT, bump);
+    return () => window.removeEventListener(COLOR_REGISTRY_CHANGED_EVENT, bump);
+  }, []);
 
   const [skuCode, setSkuCode] = useState('');
   const [stock, setStock] = useState('0');
@@ -65,11 +91,13 @@ export default function AddSkuModal({ open, product, onClose, onConfirm }: AddSk
       setColorCode('BLK');
       setPickerHex(COLOR_MAP['BLK']);
       setColorNameZh(COLOR_NAME_ZH_MAP['BLK'] ?? '');
+      setSelectedRegistryId(null);
       setSkuCode('');
       setStock('0');
       setBulkPrice(String(product.bulkPrice));
       setDropshipPrice(String(product.dropshipPrice));
       setStatus('active');
+      setRegistryVersion((v) => v + 1);
     }
   }, [open, product]);
 
@@ -77,19 +105,22 @@ export default function AddSkuModal({ open, product, onClose, onConfirm }: AddSk
   function handlePickerChange(hex: string) {
     setPickerHex(hex);
     setColorCode(hex);
+    setSelectedRegistryId(null);
   }
 
-  /* 点击常用颜色预设 */
-  function handlePresetClick(code: string) {
-    setColorCode(code);
-    setPickerHex(COLOR_MAP[code] ?? COLOR_MAP['BLK']);
-    /* 自动填入中文名称（若用户尚未手动修改则覆盖） */
-    setColorNameZh(COLOR_NAME_ZH_MAP[code] ?? '');
+  /* 点击常用颜色（来自颜色管理注册表顺序前 N 条） */
+  function handleRegistryPresetClick(entry: ColorRegistryEntry) {
+    const hex = normalizeHexInput(entry.hex) ?? '#808080';
+    setPickerHex(hex);
+    setColorCode(derivePresetColorCode(entry));
+    setColorNameZh(derivePresetColorNameZh(entry));
+    setSelectedRegistryId(entry.id);
   }
 
   /* 手动编辑颜色编号文本框 */
   function handleColorCodeInput(val: string) {
     setColorCode(val);
+    setSelectedRegistryId(null);
     const resolved = resolveHex(val.trim());
     if (resolved !== '#9ca3af') setPickerHex(resolved);
   }
@@ -171,32 +202,45 @@ export default function AddSkuModal({ open, product, onClose, onConfirm }: AddSk
                 </label>
               </div>
 
-              {/* 右：常用颜色预设 */}
-              <div className="flex-1">
-                <p className="text-[11px] text-gray-400 mb-1.5">常用颜色</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {COLOR_CODES.map((code) => {
-                    const hex = COLOR_MAP[code];
-                    const isLight = LIGHT_COLORS.has(code);
-                    const selected = colorCode === code;
-                    return (
-                      <button
-                        key={code}
-                        type="button"
-                        title={`${code} — ${COLOR_NAME_MAP[code] ?? code}`}
-                        onClick={() => handlePresetClick(code)}
-                        className={[
-                          'w-6 h-6 rounded-md transition-all shrink-0',
-                          selected ? 'ring-2 ring-offset-1 ring-gray-900 scale-110' : 'hover:scale-110',
-                        ].join(' ')}
-                        style={{
-                          backgroundColor: hex,
-                          border: isLight ? '1px solid #d1d5db' : 'none',
-                        }}
-                      />
-                    );
-                  })}
-                </div>
+              {/* 右：常用颜色 — 与「颜色管理」列表顺序一致，最多 20 条 */}
+              <div className="flex-1 min-w-0">
+                <p className="text-[11px] text-gray-400 mb-1.5">
+                  常用颜色
+                  <span className="text-gray-300 ml-1">
+                    （颜色管理前 {COLOR_REGISTRY_COMMON_PRESET_LIMIT} 条，自上而下）
+                  </span>
+                </p>
+                {commonPresets.length === 0 ? (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-md px-2 py-1.5">
+                    请先在「颜色管理」中添加颜色映射。
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {commonPresets.map((entry) => {
+                      const hex = normalizeHexInput(entry.hex) ?? '#9ca3af';
+                      const isLight =
+                        LIGHT_COLORS.has(derivePresetColorCode(entry)) || isHexLight(hex);
+                      const selected = selectedRegistryId === entry.id;
+                      const label = keywordsToInputLine(entry.keywords).trim() || hex;
+                      return (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          title={label}
+                          onClick={() => handleRegistryPresetClick(entry)}
+                          className={[
+                            'w-6 h-6 rounded-md transition-all shrink-0',
+                            selected ? 'ring-2 ring-offset-1 ring-gray-900 scale-110' : 'hover:scale-110',
+                          ].join(' ')}
+                          style={{
+                            backgroundColor: hex,
+                            border: isLight ? '1px solid #d1d5db' : 'none',
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 

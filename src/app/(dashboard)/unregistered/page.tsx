@@ -269,7 +269,7 @@ export default function UnregisteredPage() {
                             router.push(`/products?${q.toString()}`);
                           }}
                           className="text-xs text-blue-500 hover:text-blue-700 hover:underline"
-                          title="打开新建产品并带入订单中的 SKU、颜色与单价（大货价）"
+                          title="打开新建产品：带入 SKU、颜色与单价；产品名称须自填（不会使用订单 Style Name）"
                         >
                           录入
                         </button>

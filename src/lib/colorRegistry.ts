@@ -16,15 +16,50 @@ export interface ColorRegistryEntry {
   hex: string;
 }
 
+/** 「添加 SKU → 常用颜色」取注册表**存储顺序**前 N 条（与颜色管理列表从上到下一致） */
+export const COLOR_REGISTRY_COMMON_PRESET_LIMIT = 20;
+
+/** 用于添加 SKU 的颜色编号：优先拉丁/数字代码，否则 #RRGGBB，否则第一个关键词 */
+export function derivePresetColorCode(entry: ColorRegistryEntry): string {
+  const kws = entry.keywords.map((k) => k.trim()).filter(Boolean);
+  if (kws.length === 0) {
+    const norm = normalizeHexInput(entry.hex);
+    if (norm) return norm;
+    const raw = entry.hex.trim();
+    if (raw) return raw;
+    return 'COLOR';
+  }
+  const ascii = kws.find((k) => /^[A-Za-z][A-Za-z0-9#-]{0,15}$/.test(k));
+  if (ascii) return ascii;
+  const hexish = kws.find((k) => k.startsWith('#'));
+  if (hexish) return hexish;
+  return normalizeHexInput(entry.hex) ?? kws[0]!;
+}
+
+/** 中文名：第一个含中文的关键词，无则空（用户可再在弹窗里改） */
+export function derivePresetColorNameZh(entry: ColorRegistryEntry): string {
+  const kws = entry.keywords.map((k) => k.trim()).filter(Boolean);
+  const zh = kws.find((k) => /[\u4e00-\u9fff]/.test(k));
+  return zh ?? '';
+}
+
+/** 添加 SKU 常用色块：按注册表数组顺序取前 limit 条（含关键词为空的行，与列表行一一对应） */
+export function getRegistryEntriesForCommonPresets(
+  registry: ColorRegistryEntry[],
+  limit = COLOR_REGISTRY_COMMON_PRESET_LIMIT,
+): ColorRegistryEntry[] {
+  return registry.slice(0, limit);
+}
+
 const DEFAULT_SEED: ColorRegistryEntry[] = [
   { id: 'seed-black', keywords: ['BLACK', '黑色'], hex: '#1a1a1a' },
   { id: 'seed-green', keywords: ['GREEN', '绿色'], hex: '#16a34a' },
 ];
 
-/** 从单行输入解析多个关键词（逗号、顿号、换行等） */
+/** 从单行输入解析多个关键词（逗号、顿号、分号、换行等） */
 export function parseKeywordLine(text: string): string[] {
   return text
-    .split(/[,，、\n\r\t]+/)
+    .split(/[,，、;；\n\r\t]+/)
     .map((s) => s.trim())
     .filter(Boolean);
 }

@@ -8,7 +8,7 @@ export type SupplierType = '物料供应商' | '工艺供应商';
 /** 物料类供应商分类（面料、五金等） */
 export type MaterialSupplierCategory =
   | '面料'
-  | '面布'
+  | '里布'
   | '辅料'
   | '五金'
   | '包装'
@@ -103,7 +103,7 @@ export interface SupplierItem {
 
 /** 物料供应商默认分类（顺序即快捷筛选顺序） */
 export const SUPPLIER_CATEGORIES_MATERIAL: MaterialSupplierCategory[] = [
-  '面料', '面布', '辅料', '五金', '包装', '机械设备', '电子元件', '其他',
+  '面料', '里布', '辅料', '五金', '包装', '机械设备', '电子元件', '其他',
 ];
 
 /** 工艺供应商默认分类 */
@@ -133,7 +133,7 @@ export function resolveImportedCategory(
 export const CATEGORY_COLORS: Record<SupplierCategory, { bg: string; text: string }> = {
   /* —— 物料 —— */
   '面料': { bg: 'bg-blue-100', text: 'text-blue-700' },
-  '面布': { bg: 'bg-indigo-100', text: 'text-indigo-700' },
+  '里布': { bg: 'bg-indigo-100', text: 'text-indigo-700' },
   '辅料': { bg: 'bg-pink-100', text: 'text-pink-700' },
   '五金': { bg: 'bg-purple-100', text: 'text-purple-700' },
   '包装': { bg: 'bg-amber-100', text: 'text-amber-700' },
@@ -228,6 +228,21 @@ export const MOCK_SUPPLIERS: SupplierItem[] = [
     createdAt: '2024-07-03',
   },
   {
+    id: 'sup_hzy',
+    name: '海之洋',
+    fullName: '海之洋五金（示例）',
+    type: '物料供应商',
+    category: '五金',
+    paymentTerm: '30 天',
+    wechatBound: false,
+    contactGroup: '',
+    groupMembers: 0,
+    wechatId: '',
+    hasLicense: true,
+    status: '启用',
+    createdAt: '2024-06-01',
+  },
+  {
     id: 'sup_006',
     name: '顺达包装',
     fullName: '上海顺达包装材料有限公司',
@@ -262,7 +277,7 @@ export const MOCK_SUPPLIERS: SupplierItem[] = [
     name: '锦绣纺织',
     fullName: '杭州锦绣纺织有限公司',
     type: '物料供应商',
-    category: '面布',
+    category: '里布',
     paymentTerm: '45 天',
     wechatBound: true,
     contactGroup: '锦绣纺织业务群',

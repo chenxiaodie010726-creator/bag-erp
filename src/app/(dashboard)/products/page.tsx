@@ -24,13 +24,39 @@ import {
   COLOR_NAME_ZH_MAP,
 } from './_components/mockData';
 import type { ProductListItem, SkuItem } from './_components/mockData';
+import { mergeProductsByPatternCode } from './_components/mergeProductsByPattern';
 import { SetsContent } from '../sets/page';
 import { useUndoManager, useUndoKeyboard } from '@/hooks/useUndoManager';
 import UndoToast from '@/components/UndoToast';
+import { useColorRegistry } from '@/hooks/useColorRegistry';
+import { resolveHexForProductSku } from '@/lib/colorDisplay';
+import ImportImagesModal from './_components/ImportImagesModal';
+import PendingCompletionView, { type PendingRowSave } from './_components/PendingCompletionView';
+import SuspectedSetPendingView, { type SuspectedSetRowSave } from './_components/SuspectedSetPendingView';
+import { parseSetPieceCountFromSku, isSuspectedSetPieceCount } from '@/lib/skuSetPieceCount';
 
 const CURRENCY_SYMBOL_MAP: Record<string, string> = {
   USD: '$', CNY: '¥', EUR: '€', GBP: '£', JPY: '¥',
 };
+
+/** 待补全：款号或名称为空（从图片导入的空壳记录） */
+function isPendingCompletion(p: ProductListItem) {
+  return !p.patternCode.trim() || !p.name.trim();
+}
+
+function getPrimarySkuCode(p: ProductListItem): string {
+  return p.skus[0]?.skuCode ?? p.skus[0]?.skuName ?? '';
+}
+
+/** 部分未补全：核心字段已填但辅助字段（包装重量/尺寸）仍空 */
+function isPartiallyIncomplete(p: ProductListItem) {
+  return (
+    p.patternCode.trim() !== '' &&
+    p.name.trim() !== '' &&
+    p.bulkPrice > 0 &&
+    (!p.packWeight.trim() || !p.packSize.trim())
+  );
+}
 
 const STORAGE_KEY = 'cf_erp_products';
 
@@ -97,8 +123,9 @@ function ProductsPageWrapper() {
 function ProductsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const colorRegistry = useColorRegistry();
 
-  /** 从「未录入」点「录入」带入，用于新建产品弹窗预填并在创建后写入首条 SKU */
+  /** 从「未录入」点「录入」带入：SKU/单价/颜色；styleName 仅作参考展示，不写入产品名称 */
   const [orderPrefillForCreate, setOrderPrefillForCreate] = useState<{
     sku: string;
     styleName: string;
@@ -110,13 +137,17 @@ function ProductsPageContent() {
   const [products, setProductsRaw] = useState<ProductListItem[]>(MOCK_PRODUCTS);
   const undo = useUndoManager<ProductListItem[]>();
 
-  /* 加载时从 localStorage 恢复 */
+  /* 加载时从 localStorage 恢复；相同纸格款号合并为一行，避免多次从未录入建档产生重复行 */
   useEffect(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored) as ProductListItem[];
-        if (Array.isArray(parsed) && parsed.length > 0) setProductsRaw(parsed);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const merged = mergeProductsByPatternCode(parsed);
+          setProductsRaw(merged);
+          saveToStorage(merged);
+        }
       }
     } catch { /* 降级为 MOCK 数据 */ }
   }, []);
@@ -159,6 +190,7 @@ function ProductsPageContent() {
   const [addSkuModalProduct, setAddSkuModalProduct] = useState<ProductListItem | null>(null);
   const [editModalProduct, setEditModalProduct] = useState<ProductListItem | null>(null);
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [importImagesOpen, setImportImagesOpen] = useState(false);
 
   useEffect(() => {
     if (searchParams.get('fromOrder') !== '1') return;
@@ -202,7 +234,10 @@ function ProductsPageContent() {
   const [dateEnd, setDateEnd] = useState('');
 
   /* ===== 视图模式 ===== */
-  const [viewMode, setViewMode] = useState<'list' | 'card'>('list');
+  const [viewMode, setViewMode] = useState<'list' | 'card' | 'pending' | 'pendingSets'>('list');
+
+  /* ===== 卡片尺寸滑块（px，控制每列最小宽度） ===== */
+  const [cardMinWidth, setCardMinWidth] = useState(220);
 
   /* ===== 排序 ===== */
   const [sortField, setSortField] = useState('createdAt');
@@ -327,8 +362,8 @@ function ProductsPageContent() {
   function handleEditProductConfirm(productId: string, patch: EditProductPatch, syncSkuPrices: boolean) {
     const p = products.find((x) => x.id === productId);
     pushUndo(`编辑产品: ${p?.patternCode ?? productId}`);
-    setProducts((prev) =>
-      prev.map((p) => {
+    setProducts((prev) => {
+      const next = prev.map((p) => {
         if (p.id !== productId) return p;
         const updatedSkus = syncSkuPrices
           ? p.skus.map((sku) => ({
@@ -343,8 +378,9 @@ function ProductsPageContent() {
               skuName: `${patch.patternCode}-${sku.colorCode}`,
             }));
         return { ...p, ...patch, skus: updatedSkus };
-      })
-    );
+      });
+      return mergeProductsByPatternCode(next);
+    });
   }
 
   function toggleProductStatus(productId: string) {
@@ -378,6 +414,145 @@ function ProductsPageContent() {
     a.download = `products-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  /* ===== 待补全：产品名或款号为空的记录（拆成单品 / 疑似套装） ===== */
+  const pendingProductsAll = useMemo(
+    () => products.filter((p) => !p.patternCode.trim() || !p.name.trim()),
+    [products]
+  );
+  const pendingSingleProducts = useMemo(
+    () =>
+      pendingProductsAll.filter((p) => {
+        const n = parseSetPieceCountFromSku(getPrimarySkuCode(p));
+        return !isSuspectedSetPieceCount(n);
+      }),
+    [pendingProductsAll]
+  );
+  const pendingSuspectedSetProducts = useMemo(
+    () =>
+      pendingProductsAll.filter((p) =>
+        isSuspectedSetPieceCount(parseSetPieceCountFromSku(getPrimarySkuCode(p)))
+      ),
+    [pendingProductsAll]
+  );
+
+  /** 图片导入时，为未匹配 SKU 创建待补全空壳产品 */
+  function handleCreateStubs(stubs: ProductListItem[]) {
+    if (stubs.length === 0) return;
+    pushUndo(`创建 ${stubs.length} 条待补全记录`);
+    setProducts((prev) => [...prev, ...stubs]);
+    const anySet = stubs.some((s) =>
+      isSuspectedSetPieceCount(parseSetPieceCountFromSku(getPrimarySkuCode(s)))
+    );
+    setViewMode(anySet ? 'pendingSets' : 'pending');
+  }
+
+  /** 待补全视图：保存已填写完整的行 */
+  function handleSavePendingRows(rows: PendingRowSave[]) {
+    if (rows.length === 0) return;
+    const savedIds = new Set(rows.map((r) => r.id));
+    pushUndo(`从待补全保存 ${rows.length} 条产品`);
+    setProducts((prev) => {
+      const updated = prev.map((p) => {
+        const row = rows.find((r) => r.id === p.id);
+        if (!row) return p;
+        return {
+          ...p,
+          patternCode: row.patternCode,
+          name: row.name,
+          category: row.category,
+          bulkPrice: row.bulkPrice,
+          dropshipPrice: row.dropshipPrice,
+          currency: row.currency,
+          packWeight: row.packWeight,
+          packSize: row.packSize,
+          skus: p.skus.map((sku) => ({
+            ...sku,
+            bulkPrice: row.bulkPrice,
+            dropshipPrice: row.dropshipPrice,
+          })),
+        };
+      });
+      /* 同款号合并（相同 patternCode 的多条记录合并为一条） */
+      return mergeProductsByPatternCode(updated);
+    });
+    /* 若单品待补全已全部保存，切回列表视图 */
+    if (rows.length >= pendingSingleProducts.length) {
+      setViewMode('list');
+    }
+  }
+
+  /** 疑似套装待补全：保存 */
+  function handleSaveSuspectedSetRows(rows: SuspectedSetRowSave[]) {
+    if (rows.length === 0) return;
+    pushUndo(`从疑似套装待补全保存 ${rows.length} 条产品`);
+    setProducts((prev) => {
+      const updated = prev.map((p) => {
+        const row = rows.find((r) => r.id === p.id);
+        if (!row) return p;
+        const patternCode = row.patternCodes.map((c) => c.trim()).filter(Boolean).join(' · ');
+        const piecePrices = row.pieceBulk.map((b, i) => ({
+          bulk: b,
+          dropship: row.pieceDropship[i] ?? 0,
+        }));
+        return {
+          ...p,
+          patternCode,
+          patternCodesMulti: row.patternCodes.map((c) => c.trim()),
+          setPieceCount: row.setPieceCount,
+          setChildSkuLookups: row.childSkuLookups,
+          setPiecePrices: piecePrices,
+          name: row.name,
+          category: row.category,
+          bulkPrice: row.bulkPrice,
+          dropshipPrice: row.dropshipPrice,
+          currency: row.currency,
+          packWeight: row.packWeight,
+          packSize: row.packSize,
+          skus: p.skus.map((sku) => ({
+            ...sku,
+            bulkPrice: row.bulkPrice,
+            dropshipPrice: row.dropshipPrice,
+          })),
+        };
+      });
+      return mergeProductsByPatternCode(updated);
+    });
+    if (rows.length >= pendingSuspectedSetProducts.length) {
+      setViewMode('list');
+    }
+  }
+
+  /** 待补全视图：放弃（删除）记录 */
+  function handleDiscardPendingRows(ids: string[]) {
+    pushUndo(`放弃 ${ids.length} 条待补全记录`);
+    setProducts((prev) => prev.filter((p) => !ids.includes(p.id)));
+  }
+
+  /** 图片批量导入：将解析后的图片写入对应产品的 productImagesByColor */
+  function handleApplyImages(updates: { productId: string; colorCode: string; images: string[] }[]) {
+    if (updates.length === 0) return;
+    pushUndo(`批量导入图片（${updates.length} 个 SKU）`);
+    setProducts((prev) =>
+      prev.map((p) => {
+        const relevantUpdates = updates.filter((u) => u.productId === p.id);
+        if (relevantUpdates.length === 0) return p;
+        const imagesByColor: Record<string, string[]> = { ...(p.productImagesByColor ?? {}) };
+        for (const u of relevantUpdates) {
+          imagesByColor[u.colorCode] = u.images;
+        }
+        // 主图取第一个颜色的第一张图
+        const allColors = p.colors.length > 0 ? p.colors : Object.keys(imagesByColor);
+        const firstColor = allColors[0] ?? Object.keys(imagesByColor)[0];
+        const primaryImage = (imagesByColor[firstColor]?.[0]) ?? p.imageUrl ?? null;
+        return {
+          ...p,
+          imageUrl: primaryImage,
+          productImagesByColor: imagesByColor,
+        };
+      })
+    );
   }
 
   function bulkDeleteProducts() {
@@ -446,6 +621,8 @@ function ProductsPageContent() {
       if (batchTerms.length > 0 && !batchTerms.some((term) => matchesTerm(p, term))) return false;
       if (filterStatus === '启用' && p.status !== 'active') return false;
       if (filterStatus === '停用' && p.status !== 'discontinued') return false;
+      if (filterStatus === '待补全' && !isPendingCompletion(p)) return false;
+      if (filterStatus === '部分未补全' && !isPartiallyIncomplete(p)) return false;
       if (filterCategory !== '全部' && p.category !== filterCategory) return false;
       if (dateStart && p.createdAt.replace(/\//g, '-') < dateStart) return false;
       if (dateEnd && p.createdAt.replace(/\//g, '-') > dateEnd) return false;
@@ -510,6 +687,13 @@ function ProductsPageContent() {
     <div className="flex flex-col gap-3">
 
       {/* ===== 弹窗 ===== */}
+      <ImportImagesModal
+        open={importImagesOpen}
+        products={products}
+        onClose={() => setImportImagesOpen(false)}
+        onApply={handleApplyImages}
+        onCreateStubs={handleCreateStubs}
+      />
       <AddSkuModal
         open={addSkuModalProduct !== null}
         product={addSkuModalProduct}
@@ -560,7 +744,7 @@ function ProductsPageContent() {
                 : [...product.colors, code];
               row = { ...product, skus: [sku], skuCount: 1, colors };
             }
-            return [row, ...prev];
+            return mergeProductsByPatternCode([row, ...prev]);
           });
           setOrderPrefillForCreate(null);
           setPage(1);
@@ -581,6 +765,19 @@ function ProductsPageContent() {
                 ✕ 清除保存
               </button>
             )}
+            <a
+              href={`/templates/${encodeURIComponent('单品管理-导入模板.csv')}`}
+              download="单品管理-导入模板.csv"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 transition-colors text-gray-600"
+            >
+              导入模板
+            </a>
+            <button
+              onClick={() => setImportImagesOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 transition-colors text-gray-600"
+            >
+              🖼️ 批量导入图片
+            </button>
             <button
               onClick={exportProducts}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 transition-colors text-gray-600"
@@ -706,6 +903,64 @@ function ProductsPageContent() {
             </button>
           </div>
 
+          {/* 待补全入口 — 仅「单品」待补全（SKU 首段横杠后数字为 1 或无法识别件数） */}
+          <button
+            type="button"
+            onClick={() => {
+              if (viewMode === 'pending') setViewMode('list');
+              else setViewMode('pending');
+            }}
+            className={[
+              'relative flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded-md transition-colors',
+              viewMode === 'pending'
+                ? 'bg-amber-500 text-white border-amber-500'
+                : pendingSingleProducts.length > 0
+                  ? 'border-amber-400 text-amber-700 bg-amber-50 hover:bg-amber-100'
+                  : 'border-gray-200 text-gray-400 hover:bg-gray-50',
+            ].join(' ')}
+          >
+            ✎ 待补全
+            {pendingSingleProducts.length > 0 && (
+              <span
+                className={[
+                  'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[11px] font-bold rounded-full',
+                  viewMode === 'pending' ? 'bg-white text-amber-600' : 'bg-amber-500 text-white',
+                ].join(' ')}
+              >
+                {pendingSingleProducts.length}
+              </span>
+            )}
+          </button>
+
+          {/* 疑似套装待补全：SKU 首段横杠后数字 ≥2 */}
+          <button
+            type="button"
+            onClick={() => {
+              if (viewMode === 'pendingSets') setViewMode('list');
+              else setViewMode('pendingSets');
+            }}
+            className={[
+              'relative flex items-center gap-1.5 px-3 py-1.5 text-sm border rounded-md transition-colors',
+              viewMode === 'pendingSets'
+                ? 'bg-violet-600 text-white border-violet-600'
+                : pendingSuspectedSetProducts.length > 0
+                  ? 'border-violet-400 text-violet-800 bg-violet-50 hover:bg-violet-100'
+                  : 'border-gray-200 text-gray-400 hover:bg-gray-50',
+            ].join(' ')}
+          >
+            待补全 · 疑似套装
+            {pendingSuspectedSetProducts.length > 0 && (
+              <span
+                className={[
+                  'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[11px] font-bold rounded-full',
+                  viewMode === 'pendingSets' ? 'bg-white text-violet-700' : 'bg-violet-600 text-white',
+                ].join(' ')}
+              >
+                {pendingSuspectedSetProducts.length}
+              </span>
+            )}
+          </button>
+
           <span className="text-sm text-gray-500">
             共 <b className="text-gray-700">{totalProducts}</b> 个款式
           </span>
@@ -813,6 +1068,22 @@ function ProductsPageContent() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* 卡片尺寸滑块 — 仅卡片视图显示 */}
+          {viewMode === 'card' && (
+            <div className="flex items-center gap-2 px-3 py-1.5 border border-gray-200 rounded-md bg-white">
+              <span className="text-gray-400 text-xs select-none">小</span>
+              <input
+                type="range"
+                min={110}
+                max={300}
+                step={10}
+                value={cardMinWidth}
+                onChange={(e) => setCardMinWidth(Number(e.target.value))}
+                className="w-24 h-1.5 accent-gray-700 cursor-pointer"
+              />
+              <span className="text-gray-400 text-xs select-none">大</span>
+            </div>
+          )}
           <button
             onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
             className="flex items-center gap-1 px-3 py-1.5 text-sm border border-gray-200 rounded-md hover:bg-gray-50 transition-colors text-gray-600"
@@ -838,8 +1109,32 @@ function ProductsPageContent() {
         onDismiss={undo.dismissLastUndone}
       />
 
+      {/* ===== 待补全视图（单品） ===== */}
+      {viewMode === 'pending' && (
+        <PendingCompletionView
+          data={pendingSingleProducts}
+          onSaveRows={handleSavePendingRows}
+          onDiscardRows={handleDiscardPendingRows}
+        />
+      )}
+
+      {/* ===== 待补全视图（疑似套装） ===== */}
+      {viewMode === 'pendingSets' && (
+        <SuspectedSetPendingView
+          data={pendingSuspectedSetProducts}
+          allProducts={products}
+          onSaveRows={handleSaveSuspectedSetRows}
+          onDiscardRows={handleDiscardPendingRows}
+        />
+      )}
+
       {/* ===== 数据表格 ===== */}
-      <div className="bg-white border border-gray-200 rounded-lg">
+      <div
+        className={[
+          'bg-white border border-gray-200 rounded-lg',
+          viewMode === 'pending' || viewMode === 'pendingSets' ? 'hidden' : '',
+        ].join(' ')}
+      >
         {viewMode === 'list' ? (
           <>
             <ProductTable
@@ -872,7 +1167,10 @@ function ProductsPageContent() {
           </>
         ) : (
           <>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 p-4">
+            <div
+              className="grid gap-3 p-4"
+              style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${cardMinWidth}px, 1fr))` }}
+            >
               {pagedData.map((product) => {
                 const sym = CURRENCY_SYMBOL_MAP[product.currency] ?? product.currency;
                 const LIGHT_SET = new Set(['WHT', 'CRM', 'LPK', 'LBL', 'BGE']);
@@ -901,8 +1199,16 @@ function ProductsPageContent() {
                     </div>
 
                     {/* 图片区 — 正方形，作为视觉主体 */}
-                    <div className="w-full aspect-square bg-gray-50 flex items-center justify-center text-5xl select-none">
-                      👜
+                    <div className="w-full aspect-square bg-gray-50 flex items-center justify-center overflow-hidden select-none">
+                      {product.imageUrl ? (
+                        <img
+                          src={product.imageUrl}
+                          alt={product.name}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span className="text-5xl">👜</span>
+                      )}
                     </div>
 
                     {/* 状态角标 */}
@@ -932,21 +1238,48 @@ function ProductsPageContent() {
                       </div>
                       <p className="text-xs text-gray-500 truncate leading-tight">{product.name}</p>
                       <div className="flex items-center gap-1 flex-wrap">
-                        {product.colors.slice(0, 6).map((code) => {
-                          const hex = COLOR_MAP[code] ?? (code.startsWith('#') ? code : '#9ca3af');
-                          const isLight = LIGHT_SET.has(code);
-                          return (
-                            <span
-                              key={code}
-                              title={code}
-                              className="inline-block w-4 h-4 rounded shrink-0"
-                              style={{ backgroundColor: hex, border: isLight ? '1px solid #d1d5db' : 'none' }}
-                            />
-                          );
-                        })}
-                        {product.colors.length > 6 && (
+                        {(product.skus?.length ?? 0) > 0
+                          ? (product.skus ?? []).slice(0, 6).map((s) => {
+                              const hex = resolveHexForProductSku(s, colorRegistry);
+                              const light =
+                                LIGHT_SET.has(s.colorCode) ||
+                                (hex.startsWith('#') &&
+                                  (() => {
+                                    try {
+                                      const r = parseInt(hex.slice(1, 3), 16);
+                                      const g = parseInt(hex.slice(3, 5), 16);
+                                      const b = parseInt(hex.slice(5, 7), 16);
+                                      return (r * 299 + g * 587 + b * 114) / 1000 > 200;
+                                    } catch {
+                                      return false;
+                                    }
+                                  })());
+                              return (
+                                <span
+                                  key={s.id}
+                                  title={s.skuName || s.colorCode}
+                                  className="inline-block w-4 h-4 rounded shrink-0"
+                                  style={{ backgroundColor: hex, border: light ? '1px solid #d1d5db' : 'none' }}
+                                />
+                              );
+                            })
+                          : product.colors.slice(0, 6).map((code) => {
+                              const hex = COLOR_MAP[code] ?? (code.startsWith('#') ? code : '#9ca3af');
+                              const isLight = LIGHT_SET.has(code);
+                              return (
+                                <span
+                                  key={code}
+                                  title={code}
+                                  className="inline-block w-4 h-4 rounded shrink-0"
+                                  style={{ backgroundColor: hex, border: isLight ? '1px solid #d1d5db' : 'none' }}
+                                />
+                              );
+                            })}
+                        {(product.skus?.length ?? 0) > 6 ? (
+                          <span className="text-xs text-gray-400">+{(product.skus ?? []).length - 6}</span>
+                        ) : product.colors.length > 6 ? (
                           <span className="text-xs text-gray-400">+{product.colors.length - 6}</span>
-                        )}
+                        ) : null}
                       </div>
                       <div className="flex items-center justify-between text-xs text-gray-500 pt-1.5 border-t border-gray-50 mt-auto">
                         <span>大货 <b className="text-gray-800 font-mono">{sym}{product.bulkPrice.toFixed(2)}</b></span>
@@ -999,7 +1332,7 @@ interface CreateProductModalProps {
   open: boolean;
   onClose: () => void;
   onConfirm: (product: ProductListItem) => void;
-  /** 从客户订单「未录入」跳转：预填款式名、大货价（订单 EXW 单价），一件代发价为建议值 */
+  /** 从客户订单「未录入」跳转：预填大货价等；产品名称须自填（与订单 Style Name 不是同一字段） */
   orderPrefill: OrderPrefillInput | null;
 }
 
@@ -1020,7 +1353,8 @@ function CreateProductModal({ open, onClose, onConfirm, orderPrefill }: CreatePr
     if (!open) return;
     if (orderPrefill) {
       setPatternCode('');
-      setName(orderPrefill.styleName.trim());
+      /* 产品名称：内部款式统称（与纸格款号同属一款），勿用订单 Style Name（按 SKU 一行一个） */
+      setName('');
       setCategory('手袋');
       setCurrency('USD');
       setPackWeight('');
@@ -1077,12 +1411,19 @@ function CreateProductModal({ open, onClose, onConfirm, orderPrefill }: CreatePr
               {orderPrefill ? '新建产品（从订单引入）' : '新建产品'}
             </h2>
             {orderPrefill && (
-              <p className="text-xs text-gray-500 mt-1">
-                已带入 SKU <span className="font-mono text-gray-700">{orderPrefill.sku}</span>
-                {orderPrefill.colorName ? (
-                  <> · 颜色参考：{orderPrefill.colorName}</>
+              <p className="text-xs text-gray-500 mt-1 space-y-1">
+                <span>
+                  已带入 SKU <span className="font-mono text-gray-700">{orderPrefill.sku}</span>
+                  {orderPrefill.colorName ? (
+                    <> · 颜色参考：{orderPrefill.colorName}</>
+                  ) : null}
+                  ；创建后将自动增加一条对应 SKU（大货价与下表一致，一件代发价独立填写）。
+                </span>
+                {orderPrefill.styleName.trim() ? (
+                  <span className="block text-amber-800/90">
+                    订单 Style Name（本 SKU，仅供参考，勿当作产品名称）：{orderPrefill.styleName.trim()}
+                  </span>
                 ) : null}
-                ；创建后将自动增加一条对应 SKU（大货价与下表一致，一件代发价独立填写）。
               </p>
             )}
           </div>
@@ -1095,8 +1436,17 @@ function CreateProductModal({ open, onClose, onConfirm, orderPrefill }: CreatePr
               <input type="text" value={patternCode} onChange={(e) => setPatternCode(e.target.value)} className={inputCls} placeholder="如 CITYBAG-AP1" />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">产品名称 *</label>
-              <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="如 CITY BAG 手提包" />
+              <label className="block text-xs font-medium text-gray-600 mb-1">产品名称（内部）*</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className={inputCls}
+                placeholder="内部款式名称，与纸格款号同属一款"
+              />
+              <p className="text-[11px] text-gray-500 mt-0.5 leading-snug">
+                与订单总览里的 Style Name 不同：Style Name 随客户 SKU 一行一个；此处为全公司统一的款式名称。
+              </p>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">分类</label>

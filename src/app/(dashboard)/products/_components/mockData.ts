@@ -96,6 +96,15 @@ export interface SkuItem {
 export interface ProductListItem {
   id: string;
   patternCode: string;
+  /** 套装：多个纸格款号（与 SKU 件数一致）；展示/合并时 patternCode 多为「款1 · 款2 · …」 */
+  patternCodesMulti?: string[];
+  /** 套装件数（与 SKU 首段横杠后数字一致，保存时写入便于识别） */
+  setPieceCount?: number;
+  /** 套装按件单价记忆（与件数对齐；可选） */
+  setPiecePrices?: { bulk: number; dropship: number }[];
+  /** 疑似套装页「核对 SKU」列（与件数对齐；可选） */
+  setChildSkuLookups?: string[];
+  /** 内部款式名称（与纸格款号同属一款）；非客户订单里的 Style Name（后者按 SKU 一行一个） */
   name: string;
   category: string;
   imageUrl: string | null;
@@ -155,4 +164,4 @@ export const MOCK_PRODUCTS: ProductListItem[] = [
 export const CATEGORY_OPTIONS = ['全部', '手袋', '钱包', '皮带', '卡包', '其他'] as const;
 
 /** 所有状态选项 */
-export const STATUS_OPTIONS = ['全部状态', '启用', '停用'] as const;
+export const STATUS_OPTIONS = ['全部状态', '启用', '停用', '待补全', '部分未补全'] as const;

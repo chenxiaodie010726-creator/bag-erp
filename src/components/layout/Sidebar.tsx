@@ -37,8 +37,7 @@ const NAV_GROUPS: ParentNavGroup[] = [
     children: [
       { label: '产品列表', href: '/products' },
       { label: '颜色管理', href: '/colors' },
-      { label: '成本表管理', href: '/cost-sheets' },
-      { label: '套装管理', href: '/sets' },
+      { label: '成本核算表', href: '/cost-sheet' },
     ],
   },
   {
@@ -132,9 +131,16 @@ export default function Sidebar() {
   return (
     <aside className="flex flex-col w-56 min-h-screen bg-gray-900 text-gray-100">
 
-      {/* ===== 顶部 Logo ===== */}
+      {/* ===== 顶部 Logo（点击刷新当前页） ===== */}
       <div className="px-5 py-5 border-b border-gray-700">
-        <span className="text-lg font-bold tracking-wide">晟砜皮具 ERP</span>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="w-full text-left rounded-md -mx-1 px-1 py-0.5 text-lg font-bold tracking-wide text-gray-100 hover:bg-gray-800/80 hover:text-white transition-colors cursor-pointer"
+          title="点击刷新页面"
+        >
+          晟砜皮具 ERP
+        </button>
       </div>
 
       {/* ===== 导航菜单 ===== */}

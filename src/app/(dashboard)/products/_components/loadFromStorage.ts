@@ -28,6 +28,23 @@ export function loadProductById(id: string): ProductListItem | null {
   }
 }
 
+/** 按纸格款号匹配单品管理中的款式（与成本核算表 pattern_code 对应） */
+export function loadProductByPatternCode(patternCode: string): ProductListItem | null {
+  const code = patternCode?.trim();
+  if (!code) return null;
+  const upper = code.toUpperCase();
+  try {
+    const list = readProductList();
+    return (
+      list.find((p) => p.patternCode.trim().toUpperCase() === upper) ??
+      MOCK_PRODUCTS.find((p) => p.patternCode.trim().toUpperCase() === upper) ??
+      null
+    );
+  } catch {
+    return MOCK_PRODUCTS.find((p) => p.patternCode.trim().toUpperCase() === upper) ?? null;
+  }
+}
+
 /** 写回产品列表（与列表页、详情页共用） */
 export function saveProduct(product: ProductListItem): void {
   if (typeof window === 'undefined') return;

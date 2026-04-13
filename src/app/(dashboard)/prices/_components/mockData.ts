@@ -28,6 +28,18 @@ export interface PriceItem {
   price2: number | null;
   /** 其他 */
   price3: number | null;
+  /** 幅宽（如 54英寸），用于面料/里布/面布等「布类」行 */
+  fabricWidth?: string | null;
+  /**
+   * 颜色/规格（如 黑色、杂色），与编号共同唯一；用于五金等差异化定价
+   * 空字符串视为「未区分」单行展示
+   */
+  colorCategory?: string | null;
+  /**
+   * 同义词（与颜色管理相同分隔符：逗号、顿号、分号等）
+   * 用于五金：历史叫法映射到当前名称，英文匹配不区分大小写
+   */
+  synonyms?: string | null;
   remark: string;
   status: PriceStatus;
   createdAt: string;
@@ -38,11 +50,30 @@ export interface PriceItem {
  * 有配置的分类才会在价格管理页面出现第二行子类筛选
  */
 export const CATEGORY_SUBCATEGORIES: Record<string, string[]> = {
-  '五金': ['特殊五金', '常规五金', '拉链', '铁链', '磁扣'],
+  /** 拉链类细分为：拉头 → 拉链 → 条状拉链 → 拉牌 */
+  '五金': ['特殊五金', '常规五金', '拉头', '拉链', '条状拉链', '拉牌', '铁链', '磁扣'],
 };
 
-/** 物料价格表列头 */
+/** 物料价格表列头（五金等非面料分类） */
 export const MATERIAL_PRICE_COLUMNS = ['浅金/白呖', '鎏金', '其他'] as const;
+/** 布类物料（面料/里布/面布等）：常规价 + 其他 + 幅宽（无鎏金列） */
+export const MATERIAL_FABRIC_TABLE_HEADERS = ['常规价', '其他', '幅宽'] as const;
+
+/** 使用上表「常规价/其他/幅宽」的物料一级分类（与五金三档价区分；含「面布」以兼容旧数据） */
+export const MATERIAL_TEXTILE_STYLE_CATEGORIES = ['面料', '里布', '面布'] as const;
+
+export function isMaterialTextileStyleCategory(category: string): boolean {
+  return (MATERIAL_TEXTILE_STYLE_CATEGORIES as readonly string[]).includes(category);
+}
+
+/** 导入/表单：颜色/规格预设（可扩展） */
+export const PRICE_COLOR_CATEGORY_PRESETS = ['黑色', '杂色'] as const;
+
+/** 编号 + 颜色/规格 在物料 Tab 内唯一（空颜色不参与与有值行的互斥，仅同空唯一） */
+export function priceDuplicateKey(p: Pick<PriceItem, 'code' | 'colorCategory'>): string {
+  const c = (p.colorCategory ?? '').trim();
+  return `${p.code.trim()}\0${c}`;
+}
 /** 工艺价格表列头 */
 export const PROCESS_PRICE_COLUMNS = ['工价', '加急价', '其他'] as const;
 
@@ -106,9 +137,12 @@ export const MOCK_MATERIAL_PRICES: PriceItem[] = [
   { id: 'mp_016', tab: '物料', materialType: '磁扣', code: 'TC-0016', name: '磁扣圆形18mm', unit: '个', category: '五金', subCategory: '磁扣', spec: '18mm', brand: 'TC', supplierId: 'ps_hzy', supplierName: '海之洋', price1: 0.38, price2: 0.55, price3: 0.68, remark: '', status: '有效', createdAt: '2024-07-05' },
 
   // ---- 五金·拉链 - 联创五金 ----
-  { id: 'mp_019', tab: '物料', materialType: '拉链头', code: 'LCK-001', name: 'YKK金属拉链头3#', unit: '个', category: '五金', subCategory: '拉链', spec: '3#', brand: 'YKK', supplierId: 'ps_lckj', supplierName: '联创五金', price1: 1.20, price2: 1.60, price3: 1.85, remark: '', status: '有效', createdAt: '2024-05-20' },
-  { id: 'mp_020', tab: '物料', materialType: '拉链头', code: 'LCK-002', name: 'YKK金属拉链头5#', unit: '个', category: '五金', subCategory: '拉链', spec: '5#', brand: 'YKK', supplierId: 'ps_lckj', supplierName: '联创五金', price1: 1.50, price2: 2.00, price3: 2.35, remark: '', status: '有效', createdAt: '2024-05-20' },
-  { id: 'mp_021', tab: '物料', materialType: '拉链头', code: 'LCK-003', name: 'YKK金属拉链头8#', unit: '个', category: '五金', subCategory: '拉链', spec: '8#', brand: 'YKK', supplierId: 'ps_lckj', supplierName: '联创五金', price1: 1.80, price2: 2.40, price3: 2.85, remark: '', status: '有效', createdAt: '2024-05-22' },
+  { id: 'mp_019a', tab: '物料', materialType: '拉链头', code: 'LCK-001', name: 'YKK金属拉链头3#', unit: '个', category: '五金', subCategory: '拉头', spec: '3#', brand: 'YKK', supplierId: 'ps_lckj', supplierName: '联创五金', colorCategory: '黑色', price1: 1.20, price2: 1.60, price3: 1.85, remark: '', status: '有效', createdAt: '2024-05-20' },
+  { id: 'mp_019b', tab: '物料', materialType: '拉链头', code: 'LCK-001', name: 'YKK金属拉链头3#', unit: '个', category: '五金', subCategory: '拉头', spec: '3#', brand: 'YKK', supplierId: 'ps_lckj', supplierName: '联创五金', colorCategory: '杂色', price1: 1.30, price2: 1.70, price3: 1.95, remark: '', status: '有效', createdAt: '2024-05-20' },
+  { id: 'mp_020a', tab: '物料', materialType: '拉链头', code: 'LCK-002', name: 'YKK金属拉链头5#', unit: '个', category: '五金', subCategory: '拉头', spec: '5#', brand: 'YKK', supplierId: 'ps_lckj', supplierName: '联创五金', colorCategory: '黑色', price1: 1.50, price2: 2.00, price3: 2.35, remark: '', status: '有效', createdAt: '2024-05-20' },
+  { id: 'mp_020b', tab: '物料', materialType: '拉链头', code: 'LCK-002', name: 'YKK金属拉链头5#', unit: '个', category: '五金', subCategory: '拉头', spec: '5#', brand: 'YKK', supplierId: 'ps_lckj', supplierName: '联创五金', colorCategory: '杂色', price1: 1.65, price2: 2.15, price3: 2.50, remark: '', status: '有效', createdAt: '2024-05-20' },
+  { id: 'mp_021a', tab: '物料', materialType: '拉链头', code: 'LCK-003', name: 'YKK金属拉链头8#', unit: '个', category: '五金', subCategory: '拉头', spec: '8#', brand: 'YKK', supplierId: 'ps_lckj', supplierName: '联创五金', colorCategory: '黑色', price1: 1.80, price2: 2.40, price3: 2.85, remark: '', status: '有效', createdAt: '2024-05-22' },
+  { id: 'mp_021b', tab: '物料', materialType: '拉链头', code: 'LCK-003', name: 'YKK金属拉链头8#', unit: '个', category: '五金', subCategory: '拉头', spec: '8#', brand: 'YKK', supplierId: 'ps_lckj', supplierName: '联创五金', colorCategory: '杂色', price1: 1.95, price2: 2.55, price3: 3.00, remark: '', status: '有效', createdAt: '2024-05-22' },
 
   // ---- 五金·特殊五金 - 联创五金 ----
   { id: 'mp_022', tab: '物料', materialType: '箱包锁', code: 'LCK-004', name: '合金方形箱包锁', unit: '个', category: '五金', subCategory: '特殊五金', spec: '3.5*2.5cm', brand: '国标', supplierId: 'ps_lckj', supplierName: '联创五金', price1: 3.50, price2: 4.80, price3: 5.60, remark: '', status: '有效', createdAt: '2024-06-01' },
@@ -130,19 +164,19 @@ export const MOCK_MATERIAL_PRICES: PriceItem[] = [
   { id: 'mp_032', tab: '物料', materialType: '脚钉', code: 'MH-004', name: '底部脚钉圆形15mm', unit: '个', category: '五金', subCategory: '常规五金', spec: '15mm', brand: '国标', supplierId: 'ps_mhwj', supplierName: '明辉五金', price1: 0.30, price2: 0.45, price3: 0.55, remark: '', status: '有效', createdAt: '2024-04-10' },
 
   // ---- 面料 - 华信贸易 ----
-  { id: 'mp_033', tab: '物料', materialType: '牛皮', code: 'HX-001', name: '头层牛皮荔枝纹', unit: '尺', category: '面料', spec: '1.0-1.2mm', brand: '无品牌', supplierId: 'ps_hxmy', supplierName: '华信贸易', price1: 12.50, price2: null, price3: null, remark: '按尺计价', status: '有效', createdAt: '2024-03-15' },
-  { id: 'mp_034', tab: '物料', materialType: '牛皮', code: 'HX-002', name: '头层牛皮纳帕纹', unit: '尺', category: '面料', spec: '0.8-1.0mm', brand: '无品牌', supplierId: 'ps_hxmy', supplierName: '华信贸易', price1: 14.80, price2: null, price3: null, remark: '', status: '有效', createdAt: '2024-03-15' },
-  { id: 'mp_035', tab: '物料', materialType: '牛皮', code: 'HX-003', name: '二层牛皮磨砂', unit: '尺', category: '面料', spec: '1.2-1.4mm', brand: '无品牌', supplierId: 'ps_hxmy', supplierName: '华信贸易', price1: 6.20, price2: null, price3: null, remark: '', status: '有效', createdAt: '2024-04-01' },
+  { id: 'mp_033', tab: '物料', materialType: '牛皮', code: 'HX-001', name: '头层牛皮荔枝纹', unit: '尺', category: '面料', spec: '1.0-1.2mm', brand: '无品牌', supplierId: 'ps_hxmy', supplierName: '华信贸易', price1: 12.50, price2: null, price3: null, fabricWidth: '', remark: '按尺计价', status: '有效', createdAt: '2024-03-15' },
+  { id: 'mp_034', tab: '物料', materialType: '牛皮', code: 'HX-002', name: '头层牛皮纳帕纹', unit: '尺', category: '面料', spec: '0.8-1.0mm', brand: '无品牌', supplierId: 'ps_hxmy', supplierName: '华信贸易', price1: 14.80, price2: null, price3: null, fabricWidth: '', remark: '', status: '有效', createdAt: '2024-03-15' },
+  { id: 'mp_035', tab: '物料', materialType: '牛皮', code: 'HX-003', name: '二层牛皮磨砂', unit: '尺', category: '面料', spec: '1.2-1.4mm', brand: '无品牌', supplierId: 'ps_hxmy', supplierName: '华信贸易', price1: 6.20, price2: null, price3: null, fabricWidth: '', remark: '', status: '有效', createdAt: '2024-04-01' },
 
   // ---- 面料 - 永盛面料 ----
-  { id: 'mp_036', tab: '物料', materialType: 'PU皮', code: 'YS-001', name: 'PU皮荔枝纹', unit: '码', category: '面料', spec: '0.8mm', brand: '东洋', supplierId: 'ps_ysml', supplierName: '永盛面料', price1: 18.00, price2: null, price3: null, remark: '幅宽54英寸', status: '有效', createdAt: '2024-01-25' },
-  { id: 'mp_037', tab: '物料', materialType: 'PU皮', code: 'YS-002', name: 'PU皮十字纹', unit: '码', category: '面料', spec: '1.0mm', brand: '东洋', supplierId: 'ps_ysml', supplierName: '永盛面料', price1: 22.00, price2: null, price3: null, remark: '幅宽54英寸', status: '有效', createdAt: '2024-02-10' },
-  { id: 'mp_038', tab: '物料', materialType: 'PU皮', code: 'YS-003', name: 'PU皮蛇纹', unit: '码', category: '面料', spec: '0.8mm', brand: '东洋', supplierId: 'ps_ysml', supplierName: '永盛面料', price1: 26.00, price2: null, price3: null, remark: '', status: '有效', createdAt: '2024-02-15' },
+  { id: 'mp_036', tab: '物料', materialType: 'PU皮', code: 'YS-001', name: 'PU皮荔枝纹', unit: '码', category: '面料', spec: '0.8mm', brand: '东洋', supplierId: 'ps_ysml', supplierName: '永盛面料', price1: 18.00, price2: null, price3: null, fabricWidth: '54英寸', remark: '幅宽54英寸', status: '有效', createdAt: '2024-01-25' },
+  { id: 'mp_037', tab: '物料', materialType: 'PU皮', code: 'YS-002', name: 'PU皮十字纹', unit: '码', category: '面料', spec: '1.0mm', brand: '东洋', supplierId: 'ps_ysml', supplierName: '永盛面料', price1: 22.00, price2: null, price3: null, fabricWidth: '54英寸', remark: '幅宽54英寸', status: '有效', createdAt: '2024-02-10' },
+  { id: 'mp_038', tab: '物料', materialType: 'PU皮', code: 'YS-003', name: 'PU皮蛇纹', unit: '码', category: '面料', spec: '0.8mm', brand: '东洋', supplierId: 'ps_ysml', supplierName: '永盛面料', price1: 26.00, price2: null, price3: null, fabricWidth: '', remark: '', status: '有效', createdAt: '2024-02-15' },
 
-  // ---- 面布 - 锦绣纺织 ----
-  { id: 'mp_039', tab: '物料', materialType: '里布', code: 'JX-001', name: '涤纶里布黑色', unit: '码', category: '面布', spec: '75D', brand: '无品牌', supplierId: 'ps_jxfz', supplierName: '锦绣纺织', price1: 5.50, price2: null, price3: null, remark: '幅宽58英寸', status: '有效', createdAt: '2024-04-18' },
-  { id: 'mp_040', tab: '物料', materialType: '里布', code: 'JX-002', name: '涤纶里布红色', unit: '码', category: '面布', spec: '75D', brand: '无品牌', supplierId: 'ps_jxfz', supplierName: '锦绣纺织', price1: 5.80, price2: null, price3: null, remark: '', status: '有效', createdAt: '2024-04-18' },
-  { id: 'mp_041', tab: '物料', materialType: '涤纶布', code: 'JX-003', name: '防水涤纶牛津布', unit: '码', category: '面布', spec: '600D', brand: '无品牌', supplierId: 'ps_jxfz', supplierName: '锦绣纺织', price1: 8.50, price2: null, price3: null, remark: '防水处理', status: '有效', createdAt: '2024-05-05' },
+  // ---- 里布 - 锦绣纺织 ----
+  { id: 'mp_039', tab: '物料', materialType: '里布', code: 'JX-001', name: '涤纶里布黑色', unit: '码', category: '里布', spec: '75D', brand: '无品牌', supplierId: 'ps_jxfz', supplierName: '锦绣纺织', price1: 5.50, price2: null, price3: null, fabricWidth: '58英寸', remark: '幅宽58英寸', status: '有效', createdAt: '2024-04-18' },
+  { id: 'mp_040', tab: '物料', materialType: '里布', code: 'JX-002', name: '涤纶里布红色', unit: '码', category: '里布', spec: '75D', brand: '无品牌', supplierId: 'ps_jxfz', supplierName: '锦绣纺织', price1: 5.80, price2: null, price3: null, fabricWidth: '', remark: '', status: '有效', createdAt: '2024-04-18' },
+  { id: 'mp_041', tab: '物料', materialType: '涤纶布', code: 'JX-003', name: '防水涤纶牛津布', unit: '码', category: '里布', spec: '600D', brand: '无品牌', supplierId: 'ps_jxfz', supplierName: '锦绣纺织', price1: 8.50, price2: null, price3: null, fabricWidth: '', remark: '防水处理', status: '有效', createdAt: '2024-05-05' },
 
   // ---- 辅料 - 鸿达辅料 ----
   { id: 'mp_042', tab: '物料', materialType: '针线', code: 'HD-001', name: '尼龙缝纫线20/3', unit: '卷', category: '辅料', spec: '3000码/卷', brand: '无品牌', supplierId: 'ps_hdfl', supplierName: '鸿达辅料', price1: 8.00, price2: null, price3: null, remark: '', status: '有效', createdAt: '2024-06-05' },
@@ -163,7 +197,7 @@ export const MOCK_MATERIAL_PRICES: PriceItem[] = [
 
   // 停用的几条
   { id: 'mp_053', tab: '物料', materialType: 'TC嘴头', code: 'TC-0050', name: 'TC嘴头旧款方形', unit: '个', category: '五金', subCategory: '特殊五金', spec: '标准', brand: 'TC', supplierId: 'ps_hzy', supplierName: '海之洋', price1: 0.70, price2: 0.95, price3: 1.10, remark: '已停产', status: '无效', createdAt: '2023-12-01' },
-  { id: 'mp_054', tab: '物料', materialType: '牛皮', code: 'HX-010', name: '头层牛皮光面（旧）', unit: '尺', category: '面料', spec: '1.0mm', brand: '无品牌', supplierId: 'ps_hxmy', supplierName: '华信贸易', price1: 11.00, price2: null, price3: null, remark: '已换新批次', status: '无效', createdAt: '2023-10-15' },
+  { id: 'mp_054', tab: '物料', materialType: '牛皮', code: 'HX-010', name: '头层牛皮光面（旧）', unit: '尺', category: '面料', spec: '1.0mm', brand: '无品牌', supplierId: 'ps_hxmy', supplierName: '华信贸易', price1: 11.00, price2: null, price3: null, fabricWidth: '', remark: '已换新批次', status: '无效', createdAt: '2023-10-15' },
 ];
 
 /* ============================================================

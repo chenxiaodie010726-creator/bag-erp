@@ -6,7 +6,8 @@
 
 import { useState } from 'react';
 import type { SetSkuItem } from './mockData';
-import { COLOR_MAP, COLOR_NAME_MAP, COLOR_NAME_ZH_MAP } from './mockData';
+import { COLOR_MAP, COLOR_NAME_MAP } from './mockData';
+import SkuChineseColorCell from '../../products/_components/SkuChineseColorCell';
 
 interface SetSkuSubTableProps {
   setId: string;
@@ -210,9 +211,7 @@ export default function SetSkuSubTable({
 
                         {/* 颜色（中文名） */}
                         <td className={tdCls}>
-                          <span className="text-sm text-gray-700">
-                            {sku.colorNameZh ?? COLOR_NAME_ZH_MAP[sku.colorCode] ?? '—'}
-                          </span>
+                          <SkuChineseColorCell sku={sku} />
                         </td>
 
                         {/* 库存 */}

@@ -1,16 +1,20 @@
 /* ============================================================
  * 颜色圆点组件
  * 说明: 展示产品的颜色变体，超过指定数量后显示 +N
+ * 优先按 SKU 行渲染（与展开行数一致）；无 SKU 时回退到 colors 数组
  * ============================================================ */
 
+import { useColorRegistry } from '@/hooks/useColorRegistry';
+import { resolveHexForProductSku } from '@/lib/colorDisplay';
 import { COLOR_MAP } from './mockData';
+import type { SkuItem } from './mockData';
 
 interface ColorDotsProps {
   colors: string[];
+  /** 若存在 SKU，按每条 SKU 一个色块（避免多条 SKU 共用同一 colorCode 时只显示一个点） */
+  skus?: SkuItem[];
   maxShow?: number;
 }
-
-const LIGHT_PRESET = new Set(['WHT', 'CRM', 'LPK', 'LBL', 'BGE']);
 
 function isLightHex(hex: string): boolean {
   try {
@@ -22,21 +26,36 @@ function isLightHex(hex: string): boolean {
   } catch { return false; }
 }
 
-export default function ColorDots({ colors, maxShow = 5 }: ColorDotsProps) {
-  const visible = colors.slice(0, maxShow);
-  const remaining = colors.length - maxShow;
+export default function ColorDots({ colors, skus, maxShow = 5 }: ColorDotsProps) {
+  const registry = useColorRegistry();
+
+  const fromSkus =
+    skus && skus.length > 0
+      ? skus.map((s) => ({
+          key: s.id,
+          hex: resolveHexForProductSku(s, registry),
+          title: s.skuName || s.colorCode,
+        }))
+      : null;
+
+  const rows = fromSkus ?? colors.map((code, i) => ({
+    key: `c-${i}-${code}`,
+    hex: COLOR_MAP[code] ?? (code.startsWith('#') ? code : '#9ca3af'),
+    title: code,
+  }));
+
+  const visible = rows.slice(0, maxShow);
+  const remaining = rows.length - maxShow;
 
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1">
-        {visible.map((code) => {
-          /* 支持预设代码（BLK）和自定义十六进制颜色（#ff5500） */
-          const hex = COLOR_MAP[code] ?? (code.startsWith('#') ? code : '#9ca3af');
-          const isLight = LIGHT_PRESET.has(code) || isLightHex(hex);
+        {visible.map(({ key, hex, title }) => {
+          const isLight = isLightHex(hex);
           return (
             <span
-              key={code}
-              title={code}
+              key={key}
+              title={title}
               className="inline-block w-7 h-7 rounded-md shrink-0"
               style={{
                 backgroundColor: hex,
@@ -49,7 +68,7 @@ export default function ColorDots({ colors, maxShow = 5 }: ColorDotsProps) {
           <span className="text-xs text-gray-400 ml-0.5">+{remaining}</span>
         )}
       </div>
-      <span className="text-xs text-gray-400">共 {colors.length} 个颜色</span>
+      <span className="text-xs text-gray-400">共 {rows.length} 个颜色</span>
     </div>
   );
 }

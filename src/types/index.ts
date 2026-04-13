@@ -374,3 +374,318 @@ export interface PackingListItem {
   sort_order: number;
   notes: string | null;
 }
+
+// ============================================================
+// 成本核算表体系
+// ============================================================
+
+/** 成本表状态 */
+export type CostSheetStatus = 'draft' | 'confirmed' | 'locked';
+
+export const COST_SHEET_STATUS_MAP: Record<CostSheetStatus, string> = {
+  draft: '草稿',
+  confirmed: '已确认',
+  locked: '已锁定',
+};
+
+/** 包装材料详情（来自「包装材料」Sheet） */
+export interface PackagingDetails {
+  // 布袋
+  cloth_bag_logo_position?: string;   // LOGO位置/高度注上(CM)
+  cloth_bag_logo_type?: string;       // LOGO型号
+  cloth_bag_size?: string;            // 长*高(CM)
+  cloth_bag_wrist_height?: string;    // 手腕中高
+  // 胶袋
+  plastic_bag_size?: string;          // 规格(CM)
+  // 贴纸
+  tag_sticker_qty?: number;           // 吊牌贴纸数量 (6*2.5CM)
+  tape_sticker_qty?: number;          // 胶带贴纸数量 (10*3.5CM)
+  carton_sticker_note?: string;       // 纸箱贴纸说明/数量 (10*3.5CM)
+  // 洗水唛
+  wash_label_po?: string;             // 印刷的PO#
+  wash_label_size?: string;           // 规格(大/小)
+  // 纸箱
+  carton_size?: string;               // 尺寸(CM)
+  carton_qty_per_box?: string;        // 每箱/数量
+  // 包装信息
+  package_size?: string;              // 包装尺寸(CM)
+  package_weight_kg?: number;         // 重量kg
+  notes?: string;
+}
+
+/** 成本表主表 */
+export interface CostSheet {
+  id: string;
+  pattern_code: string;              // 纸格款号
+  version: number;                   // 版本号，1=初始导入，2,3...=修改版本
+  status: CostSheetStatus;
+  date: string;                      // 制表日期
+  pattern_pieces: number | null;     // 纸格件数
+  knife_gap: string | null;          // 刀缝
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  // 前端关联
+  material_items?: CostSheetMaterialItem[];
+  /**
+   * 主料系列变体（与成本明细顶栏「常规 / NEON PINK…」对应）：非常规系列的物料行可覆盖部分字段；
+   * 未覆盖的字段沿用 material_items（常规基准行）。key 与变体按钮一致：__standard__ 一般不存。
+   */
+  material_variant_overrides?: Record<string, Record<string, Partial<CostSheetMaterialItem>>>;
+  /**
+   * 「做法不同」变体：完整的物料明细行集合，key 为变体标识（如"压花"）。
+   * 来自导入 Excel 中额外的「成本表(xxx)」Sheet，与 material_variant_overrides 互斥（后者用于价格微调）。
+   */
+  material_variant_full?: Record<string, CostSheetMaterialItem[]>;
+  /**
+   * 各变体的类型标记：'price_diff'=价格不同（系统自动检测）；'method_diff'=做法不同（Excel 独立 Sheet 导入）。
+   */
+  material_variant_type?: Record<string, 'price_diff' | 'method_diff'>;
+  hardware_items?: CostSheetHardwareItem[];
+  packaging_items?: CostSheetPackagingItem[];
+  craft_items?: CostSheetCraftItem[];
+  oil_edge?: CostSheetOilEdge | null;
+  color_material_map?: ColorMaterialMapEntry[];
+  /** 包装材料详情，来自「包装材料」Sheet */
+  packaging_details?: PackagingDetails;
+  /**
+   * 生产要求（来自「生产要求」Sheet）
+   * 两列自由行：左列为类别/项目名称（如五金、油边、注意事项），右列为说明；行数与项目完全不固定。
+   */
+  production_requirements?: ProductionRequirementItem[];
+}
+
+/** 生产要求一行（与 Excel 左列 + 右列对应） */
+export interface ProductionRequirementItem {
+  id: string;
+  /** 左列：类别或项目名称，如「五金」「油边」「注意事项」 */
+  label: string;
+  /** 右列：详细要求，可多行 */
+  content: string;
+  sort_order: number;
+}
+
+/** 物料明细行（主料/配料/里布/辅料/拉链/织带等，类别不固定） */
+export interface CostSheetMaterialItem {
+  id: string;
+  cost_sheet_id: string;
+  category: string;                  // 类别名称，自由填写
+  part_name: string;                 // 部件名称
+  length: number;                    // 长
+  width: number | null;              // 宽（拉链类可能无宽度）
+  pieces: number;                    // 件数
+  fabric_width: number | null;       // 布幅（拉链类可能无布幅）
+  waste_rate: number;                // 损耗率，如0.03=3%
+  material_code: string | null;      // 物料编号（可选，也可通过对照表匹配）
+  unit_price: number | null;         // 单价（系统自动匹配，导入时忽略）
+  oil_edge_inches: number | null;    // 油边寸数
+  glue_price: number | null;         // 过胶单价
+  /** 行备注（可选；旧数据可能无此字段） */
+  remarks?: string | null;
+  sort_order: number;
+}
+
+/** 五金明细行 */
+export interface CostSheetHardwareItem {
+  id: string;
+  cost_sheet_id: string;
+  /** 物料编号（与价格管理物料编码一致时可自动带出单价） */
+  material_code: string | null;
+  /** 图片 URL（可选） */
+  image_url: string | null;
+  name: string;
+  quantity: number;
+  unit_price: number;
+  remarks?: string | null;
+  sort_order: number;
+}
+
+/** 包装明细行 */
+export interface CostSheetPackagingItem {
+  id: string;
+  cost_sheet_id: string;
+  code: string | null;               // 包装编号如B01
+  name: string;
+  quantity: number | null;            // 外箱贴纸由系统根据装箱数计算
+  unit_price: number | null;
+  is_auto_calc: boolean;             // 是否系统自动计算（如外箱贴纸）
+  remarks?: string | null;
+  sort_order: number;
+}
+
+/** 工艺明细行 */
+export interface CostSheetCraftItem {
+  id: string;
+  cost_sheet_id: string;
+  image_url: string | null;          // 工艺参考图 URL（与五金一致）
+  code: string;                      // 工艺编号或款号
+  name: string;
+  quantity: number;
+  unit_price: number;
+  is_pattern_bound: boolean;         // 编号=款号本身时为true
+  remarks?: string | null;
+  sort_order: number;
+}
+
+/** 油边 */
+export interface CostSheetOilEdge {
+  id: string;
+  cost_sheet_id: string;
+  total_length_inches: number;       // 总长寸数
+  quantity: number;                  // 数量（默认1）
+  unit_price: number;                // 单价（默认0.01）
+  remarks?: string | null;
+}
+
+/** 颜色-物料对照表条目 */
+export interface ColorMaterialMapEntry {
+  id: string;
+  cost_sheet_id: string;
+  color_zh: string;                  // 中文颜色名
+  color_en: string;                  // 英文颜色名
+  mappings: Record<string, string>;  // 动态键值对，如 { "主料编号": "6601-黑色", "五金颜色": "浅金" }
+  /**
+   * 引用的成本表 Sheet 名称（如"成本表(压花)"），用于多成本表格式的导入与展示。
+   * 为空时默认使用常规基准成本表。
+   */
+  cost_sheet_ref?: string;
+}
+
+// ============================================================
+// 生产单体系
+// ============================================================
+
+/** 生产单状态 */
+export type ProductionOrderStatus = 'unreviewed' | 'reviewed';
+
+export const PRODUCTION_ORDER_STATUS_MAP: Record<ProductionOrderStatus, string> = {
+  unreviewed: '未审核',
+  reviewed: '已审核',
+};
+
+/** 生产单主表
+ *  一张生产单对应一个纸格款号（Pattern），包含多个颜色/SKU
+ *  编号格式：TC + (年份-20) + 月份(2位) + 序号(2位)
+ *  示例：TC60401 = 2026年4月第1单 */
+export interface ProductionOrder {
+  id: string;
+  order_number: string;              // 生产单号，如 TC60401
+  customer_order_id: string | null;  // 关联客户订单ID
+  po_number: string;                 // 客户PO号
+  pattern_code: string;              // 纸格款号
+  cost_sheet_id: string | null;      // 关联成本核算表ID
+  status: ProductionOrderStatus;
+  order_date: string;                // 下单日期
+  delivery_date: string | null;      // 交货日期
+  factory_name: string | null;       // 工厂名称
+  business_follower: string | null;  // 业务跟单
+  /** 生产要求（多行文本） */
+  production_requirements: ProductionRequirements;
+  /** 压唛信息 */
+  embossing_dies: EmbossingDieEntry[];
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  // 前端关联
+  items?: ProductionOrderItem[];
+  procurement_sheets?: ProcurementSheet[];
+}
+
+/** 生产要求 */
+export interface ProductionRequirements {
+  oil_edge: string;                  // 油边要求
+  sewing_thread: string;             // 车线/好易车线要求
+  embossing: string;                 // 压花要求
+  embossing_die: string;             // 压唛要求
+  packaging: string;                 // 包装要求
+  notes: string;                     // 注意事项
+  custom_fields: Record<string, string>;  // 自定义字段
+}
+
+/** 压唛（铜模）条目 */
+export interface EmbossingDieEntry {
+  id: string;
+  die_number: string;                // 压唛编号，如 2#
+  name: string;                      // 名称描述
+  image_url: string | null;          // 图片
+  notes: string | null;
+}
+
+/** 生产单明细行（每个颜色/SKU一行）*/
+export interface ProductionOrderItem {
+  id: string;
+  production_order_id: string;
+  sku_code: string;                  // SKU编码（客户款号）
+  color_zh: string;                  // 中文颜色
+  color_en: string;                  // 英文颜色
+  quantity: number;                  // 生产数量
+  /** 批次信息（分批生产时使用） */
+  batches: ProductionBatch[];
+  /** 颜色物料映射（从成本表颜色对照表来） */
+  material_mapping: Record<string, string>;
+  notes: string | null;
+}
+
+/** 分批生产 */
+export interface ProductionBatch {
+  id: string;
+  batch_number: number;              // 批次号
+  quantity: number;                  // 该批次数量
+  planned_date: string | null;       // 计划生产日期
+  status: 'pending' | 'in_production' | 'completed';
+}
+
+/** 采购单类型 */
+export type ProcurementType =
+  | 'fabric_lining_accessory'  // 面料里布辅料
+  | 'hardware_zipper'          // 五金拉链
+  | 'craft'                    // 工艺
+  | 'packaging';               // 包装材料
+
+export const PROCUREMENT_TYPE_MAP: Record<ProcurementType, string> = {
+  fabric_lining_accessory: '面料里布辅料',
+  hardware_zipper: '五金拉链',
+  craft: '工艺',
+  packaging: '包装材料',
+};
+
+/** 采购单 */
+export interface ProcurementSheet {
+  id: string;
+  production_order_id: string;
+  type: ProcurementType;
+  supplier_name: string | null;
+  supplier_phone: string | null;
+  items: ProcurementItem[];
+  notes: string | null;
+  created_at: string;
+}
+
+/** 采购单明细行 */
+export interface ProcurementItem {
+  id: string;
+  procurement_sheet_id: string;
+  category: string;                  // 类别（主料/配料/里布/辅料/五金/拉链/织带/工艺/包装）
+  name: string;                      // 物料/工艺名称
+  material_code: string | null;      // 物料编号/颜色编号
+  color: string | null;              // 颜色
+  unit: string | null;               // 单位
+  unit_usage: number;                // 单用量（损耗后）
+  order_quantity: number;            // 订单数量
+  total_quantity: number;            // 合计 = 单用量 × 订单数量
+  confirmed_quantity: number | null; // 确认采购量（可手动调整）
+  supplier_name: string | null;      // 具体供应商
+  supplier_phone: string | null;     // 供应商电话
+  notes: string | null;
+  sort_order: number;
+}
+
+/** 人工费用设置 */
+export interface LaborCostSetting {
+  id: string;
+  name: string;                      // 如"人工"、"QC包装"、"加工"
+  unit_price: number;
+  effective_from: string;            // 生效开始日期
+  effective_to: string | null;       // 生效结束日期，null=至今
+  created_at: string;
+}

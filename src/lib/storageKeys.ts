@@ -13,4 +13,9 @@ export const STORAGE_KEYS = {
   SUPPLIER_CATEGORIES_MATERIAL: 'cf_erp_supplier_categories_material',
   /** 工艺供应商 — 自定义分类列表 */
   SUPPLIER_CATEGORIES_PROCESS: 'cf_erp_supplier_categories_process',
+  COST_SHEETS: 'cf_erp_cost_sheets',
+  LABOR_COSTS: 'cf_erp_labor_costs',
+  PRODUCTION_ORDERS: 'cf_erp_production_orders',
+  /** 压唛（铜模）数据库 */
+  EMBOSSING_DIES: 'cf_erp_embossing_dies',
 } as const;

@@ -55,6 +55,21 @@ function resolveOrderByPo(poRaw: string, orders: OrderItem[]): OrderItem | null 
   return orders.find((o) => normalizePoInput(o.poNumber) === key) ?? null;
 }
 
+/** 文件中尚未在总览存在的 PO：自动建订单头（待确认），避免先手工建 PO 再导入 */
+function createStubOrderFromPo(poRaw: string): OrderItem {
+  const poNumber = normalizePoInput(poRaw) || String(poRaw ?? '').trim();
+  return {
+    id: `imported_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
+    poNumber,
+    amount: 0,
+    poQty: 0,
+    batches: 1,
+    status: '待确认',
+    orderDate: new Date().toISOString().slice(0, 10),
+    customerName: '（明细导入）',
+  };
+}
+
 /** Color / Color颜色 */
 function findColorColumnIndex(headers: string[]): number {
   return headers.findIndex((h) => {
@@ -90,6 +105,8 @@ interface ImportResult {
   /** 按订单分组的明细；解析失败或未识别 PO 时为 null */
   byOrder: { order: OrderItem; detail: OrderDetailData }[] | null;
   errors: string[];
+  /** 本次为文件中的 PO 自动新建的订单头（用于预览提示） */
+  autoCreatedOrders: OrderItem[];
 }
 
 async function parseDetailExcel(file: File, orders: OrderItem[]): Promise<ImportResult> {
@@ -98,7 +115,7 @@ async function parseDetailExcel(file: File, orders: OrderItem[]): Promise<Import
   const ws = wb.Sheets[wb.SheetNames[0]];
 
   const rawRows = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, defval: '' }) as unknown[][];
-  if (rawRows.length < 2) return { byOrder: null, errors: ['文件为空或格式不正确'] };
+  if (rawRows.length < 2) return { byOrder: null, errors: ['文件为空或格式不正确'], autoCreatedOrders: [] };
 
   const headers = rawRows[0] as string[];
   const errors: string[] = [];
@@ -108,6 +125,7 @@ async function parseDetailExcel(file: File, orders: OrderItem[]): Promise<Import
     return {
       byOrder: null,
       errors: ['未找到 PO# / PO号 列。请下载最新模板，填写与系统一致的 PO。'],
+      autoCreatedOrders: [],
     };
   }
 
@@ -118,11 +136,11 @@ async function parseDetailExcel(file: File, orders: OrderItem[]): Promise<Import
   const priceIdx = findUnitPriceColumnIndex(headers);
   const qtyIdx = findQtyColumnIndex(headers);
 
-  if (skuIdx < 0) return { byOrder: null, errors: ['未找到 SKU 列，请检查表头'] };
+  if (skuIdx < 0) return { byOrder: null, errors: ['未找到 SKU 列，请检查表头'], autoCreatedOrders: [] };
   if (priceIdx < 0) {
-    return { byOrder: null, errors: ['未找到「价格FOB」或 EXW 单价列，请检查表头'] };
+    return { byOrder: null, errors: ['未找到「价格FOB」或 EXW 单价列，请检查表头'], autoCreatedOrders: [] };
   }
-  if (qtyIdx < 0) return { byOrder: null, errors: ['未找到「数量」或 QTY 列，请检查表头'] };
+  if (qtyIdx < 0) return { byOrder: null, errors: ['未找到「数量」或 QTY 列，请检查表头'], autoCreatedOrders: [] };
 
   const shipCols: { idx: number; date: string }[] = [];
   headers.forEach((h, i) => {
@@ -135,6 +153,25 @@ async function parseDetailExcel(file: File, orders: OrderItem[]): Promise<Import
   });
 
   const byPoKey = new Map<string, OrderDetailItem[]>();
+  /** 规范化 PO → 订单（已有或本次自动新建的订单头） */
+  const orderByNk = new Map<string, OrderItem>();
+  const autoCreatedOrders: OrderItem[] = [];
+
+  function getOrCreateOrderForPo(poRaw: string): OrderItem | null {
+    const nk = normalizePoInput(poRaw);
+    if (!nk) return null;
+    const hit = orderByNk.get(nk);
+    if (hit) return hit;
+    const existing = resolveOrderByPo(poRaw, orders);
+    if (existing) {
+      orderByNk.set(nk, existing);
+      return existing;
+    }
+    const stub = createStubOrderFromPo(poRaw);
+    orderByNk.set(nk, stub);
+    autoCreatedOrders.push(stub);
+    return stub;
+  }
 
   for (let ri = 1; ri < rawRows.length; ri++) {
     const row = rawRows[ri] as unknown[];
@@ -147,9 +184,9 @@ async function parseDetailExcel(file: File, orders: OrderItem[]): Promise<Import
       continue;
     }
 
-    const order = resolveOrderByPo(poRaw, orders);
+    const order = getOrCreateOrderForPo(poRaw);
     if (!order) {
-      errors.push(`第 ${ri + 1} 行：系统中不存在订单「${poRaw}」，请先在订单总览新建该 PO`);
+      errors.push(`第 ${ri + 1} 行：PO# 无法识别，已跳过`);
       continue;
     }
 
@@ -187,14 +224,23 @@ async function parseDetailExcel(file: File, orders: OrderItem[]): Promise<Import
   }
 
   if (byPoKey.size === 0) {
-    return { byOrder: null, errors: errors.length ? errors : ['未解析到有效明细行（请检查 PO# 是否与系统订单一致）'] };
+    return {
+      byOrder: null,
+      errors: errors.length ? errors : ['未解析到有效明细行（请检查 PO#、SKU、单价与数量）'],
+      autoCreatedOrders,
+    };
+  }
+
+  const orderForId = new Map<string, OrderItem>();
+  for (const o of orderByNk.values()) {
+    orderForId.set(o.id, o);
   }
 
   const shipmentDates = shipCols.map((c) => c.date);
   const byOrder: { order: OrderItem; detail: OrderDetailData }[] = [];
 
   byPoKey.forEach((items, orderId) => {
-    const order = orders.find((o) => o.id === orderId);
+    const order = orderForId.get(orderId);
     if (!order || items.length === 0) return;
     byOrder.push({
       order,
@@ -205,7 +251,7 @@ async function parseDetailExcel(file: File, orders: OrderItem[]): Promise<Import
     });
   });
 
-  return { byOrder, errors };
+  return { byOrder, errors, autoCreatedOrders };
 }
 
 export default function ImportOrderDetailModal({
@@ -230,7 +276,7 @@ export default function ImportOrderDetailModal({
 
   async function handleFile(file: File) {
     if (!file.name.match(/\.(xlsx|xls)$/i)) {
-      setResult({ byOrder: null, errors: ['仅支持 .xlsx / .xls 格式'] });
+      setResult({ byOrder: null, errors: ['仅支持 .xlsx / .xls 格式'], autoCreatedOrders: [] });
       setStage('done');
       return;
     }
@@ -321,7 +367,7 @@ export default function ImportOrderDetailModal({
                   <div className="text-3xl">📂</div>
                   <div className="text-center">
                     <p className="text-sm font-medium text-gray-700">点击选择文件，或拖拽至此</p>
-                    <p className="text-xs text-gray-400 mt-1">需包含 PO# 列，且 PO 已在订单总览中存在</p>
+                    <p className="text-xs text-gray-400 mt-1">需包含 PO# 列；若总览尚无该 PO，将自动创建订单头后再写入明细</p>
                   </div>
                 </>
               )}
@@ -349,6 +395,15 @@ export default function ImportOrderDetailModal({
                   {result.errors.map((err, i) => (
                     <p key={i} className="text-xs text-amber-600">{err}</p>
                   ))}
+                </div>
+              )}
+              {result.autoCreatedOrders.length > 0 && (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                  <p className="text-xs font-semibold text-blue-800 mb-1">将自动新建 {result.autoCreatedOrders.length} 个订单头</p>
+                  <p className="text-xs text-blue-700">
+                    {result.autoCreatedOrders.map((o) => o.poNumber).join('、')}
+                  </p>
+                  <p className="text-xs text-blue-600/80 mt-1">确认导入后可在订单总览中补充客户等信息</p>
                 </div>
               )}
               {result.byOrder && result.byOrder.length > 0 && (

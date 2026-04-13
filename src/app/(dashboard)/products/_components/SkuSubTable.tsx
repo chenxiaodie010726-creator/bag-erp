@@ -9,7 +9,8 @@
 import { useState } from 'react';
 import { useAuth } from '@/components/auth/AuthProvider';
 import type { SkuItem } from './mockData';
-import { COLOR_NAME_MAP, COLOR_NAME_ZH_MAP } from './mockData';
+import { COLOR_NAME_MAP } from './mockData';
+import SkuChineseColorCell from './SkuChineseColorCell';
 import { resolveHexForProductSku } from '@/lib/colorDisplay';
 import { useColorRegistry } from '@/hooks/useColorRegistry';
 
@@ -35,6 +36,8 @@ interface SkuSubTableProps {
   productId: string;
   skus: SkuItem[];
   skuCount: number;
+  /** 产品按颜色分组的图片 Map，key 为 colorCode */
+  imagesByColor?: Record<string, string[]>;
   highlightTerms?: string[];
   onRequestAddSku: (productId: string) => void;
   onBulkDeleteSkus: (productId: string, skuIds: string[]) => void;
@@ -46,6 +49,7 @@ export default function SkuSubTable({
   productId,
   skus,
   skuCount,
+  imagesByColor,
   highlightTerms = [],
   onRequestAddSku,
   onBulkDeleteSkus,
@@ -155,11 +159,28 @@ export default function SkuSubTable({
                     />
                   </td>
 
-                  {/* 缩略图 */}
+                  {/* 缩略图：优先显示该颜色对应的实际图片，无图则降级为色块 */}
                   <td className={tdCls}>
+                    {(() => {
+                      const imgUrl = imagesByColor?.[sku.colorCode]?.[0] ?? null;
+                      return imgUrl ? (
+                        <img
+                          src={imgUrl}
+                          alt={sku.colorCode}
+                          className="w-9 h-9 rounded-md object-cover border border-gray-200 bg-gray-100 shrink-0"
+                          onError={(e) => {
+                            const img = e.target as HTMLImageElement;
+                            img.style.display = 'none';
+                            (img.nextElementSibling as HTMLElement | null)?.removeAttribute('style');
+                          }}
+                        />
+                      ) : null;
+                    })()}
+                    {/* 色块降级展示（图片加载失败或无图时显示） */}
                     <div
-                      className="w-9 h-9 rounded-md flex items-center justify-center text-white text-xs shrink-0"
+                      className="w-9 h-9 rounded-md flex items-center justify-center text-xs shrink-0"
                       style={{
+                        display: imagesByColor?.[sku.colorCode]?.[0] ? 'none' : 'flex',
                         backgroundColor: hex,
                         border: isLight ? '1px solid #d1d5db' : 'none',
                         color: isLight ? '#666' : '#fff',
@@ -203,11 +224,9 @@ export default function SkuSubTable({
                     </div>
                   </td>
 
-                  {/* 颜色（中文名） */}
+                  {/* 颜色（中文名）：手填优先，否则英文 Color → 中文 / 代码预设 */}
                   <td className={tdCls}>
-                    <span className="text-sm text-gray-700">
-                      {sku.colorNameZh ?? COLOR_NAME_ZH_MAP[sku.colorCode] ?? '—'}
-                    </span>
+                    <SkuChineseColorCell sku={sku} />
                   </td>
 
                   {/* 库存 */}

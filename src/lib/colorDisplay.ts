@@ -1,11 +1,35 @@
 import { COLOR_MAP } from '@/app/(dashboard)/products/_components/mockData';
 import { lookupRegistryHex, type ColorRegistryEntry } from '@/lib/colorRegistry';
 
-/** 从 SKU 片段推断 2–4 位颜色代码（如 AP1-BC-BLK → BLK） */
+/**
+ * 从 SKU 推断颜色/变体代码（用于建档、与列表色块对应）。
+ * 优先使用「最后一个 `-` 之后」的片段（颜色多在末尾），避免误用款号段（如 test01-紫色 曾全部变成 TES）。
+ */
 export function guessColorCodeFromSku(sku: string): string | null {
   const segs = sku.split('-').filter(Boolean);
+  if (segs.length === 0) return null;
+  const last = segs[segs.length - 1]!.trim();
+  if (!last) return null;
+
+  /* 末段为纯数字：作为变体后缀代码（与款号数字区分） */
+  if (/^\d+$/.test(last)) return last;
+
+  /* 末段含中文等：整段作为内部 code（展示走颜色管理/registry） */
+  if (/[^\u0000-\u007f]/.test(last)) return last;
+
+  /* 末段为英文词组：取最后一词再取字母（neon pink → PNK） */
+  const words = last.split(/\s+/).filter(Boolean);
+  const tailWord = words[words.length - 1] ?? last;
+  let letters = tailWord.replace(/[^A-Za-z]/g, '');
+  if (letters.length >= 2 && letters.length <= 8) {
+    return letters.length <= 6
+      ? letters.slice(0, Math.max(2, Math.min(6, letters.length))).toUpperCase()
+      : letters.slice(0, 3).toUpperCase();
+  }
+
+  /* 自后向前：兼容 AP1-BC-BLK 等传统结构 */
   for (let i = segs.length - 1; i >= 0; i--) {
-    const letters = segs[i].replace(/[^A-Za-z]/g, '');
+    letters = segs[i].replace(/[^A-Za-z]/g, '');
     if (letters.length >= 2 && letters.length <= 6) {
       return letters.slice(0, 3).toUpperCase();
     }

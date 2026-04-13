@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { COLOR_MAP, type SetItem } from '../_components/mockData';
-import { COLOR_NAME_ZH_MAP } from '../../products/_components/mockData';
+import SkuChineseColorCell from '../../products/_components/SkuChineseColorCell';
 import { loadSetById } from '../../products/_components/loadFromStorage';
 
 const CURRENCY_SYMBOL: Record<string, string> = {
@@ -358,13 +358,14 @@ export default function SetDetailPage() {
                       {item.skus.map((sku) => {
                         const hex = resolveHex(sku.colorCode);
                         const light = LIGHT.has(sku.colorCode);
-                        const zh = sku.colorNameZh ?? COLOR_NAME_ZH_MAP[sku.colorCode] ?? '—';
                         return (
                           <tr key={sku.id} className="hover:bg-gray-50/50">
                             <td className="py-2.5 pr-3">
                               <span className="inline-block w-7 h-7 rounded-md" style={{ backgroundColor: hex, border: light ? '1px solid #d1d5db' : 'none' }} />
                             </td>
-                            <td className="py-2.5 pr-3 text-gray-800">{zh}</td>
+                            <td className="py-2.5 pr-3 text-gray-800">
+                              <SkuChineseColorCell sku={sku} />
+                            </td>
                             <td className="py-2.5 pr-3 font-mono text-xs">{sku.skuCode}</td>
                             <td className="py-2.5 pr-3 text-right font-mono">{sym}{item.dropshipPrice.toFixed(2)}</td>
                             <td className="py-2.5 pr-3 text-right font-mono">{sym}{item.bulkPrice.toFixed(2)}</td>

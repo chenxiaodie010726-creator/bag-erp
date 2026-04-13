@@ -38,6 +38,7 @@ export const PAGE_PERMISSIONS: Record<string, Record<Role, PermissionLevel>> = {
   // ===== 产品管理 =====
   '/products':                        { super_admin: 'full', admin: 'full', clerk: 'full', production: 'read', packaging: 'none' },
   '/colors':                          { super_admin: 'full', admin: 'full', clerk: 'full', production: 'read', packaging: 'none' },
+  '/cost-sheet':                      { super_admin: 'full', admin: 'full', clerk: 'none', production: 'none', packaging: 'none' },
   '/cost-sheets':                     { super_admin: 'full', admin: 'full', clerk: 'none', production: 'none', packaging: 'none' },
   '/sets':                            { super_admin: 'full', admin: 'full', clerk: 'full', production: 'read', packaging: 'none' },
 

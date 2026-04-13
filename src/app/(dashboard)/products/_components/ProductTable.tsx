@@ -140,7 +140,11 @@ export default function ProductTable({
             <th className={`${thCls} ${sortableCls}`} onClick={() => onSort('patternCode')}>
               纸格款号 <SortArrow field="patternCode" sortField={sortField} sortDir={sortDir} />
             </th>
-            <th className={`${thCls} ${sortableCls}`} onClick={() => onSort('name')}>
+            <th
+              className={`${thCls} ${sortableCls}`}
+              onClick={() => onSort('name')}
+              title="内部款式名称（与纸格款号同属一款）；与订单 Style Name（按 SKU）不同"
+            >
               产品名称 <SortArrow field="name" sortField={sortField} sortDir={sortDir} />
             </th>
             <th className={thCls}>颜色</th>
@@ -258,7 +262,7 @@ export default function ProductTable({
                     {/* 颜色 + 展开按钮 */}
                     <td className={tdCls}>
                       <div className="flex items-start gap-2">
-                        <ColorDots colors={product.colors} maxShow={5} />
+                        <ColorDots colors={product.colors} skus={product.skus} maxShow={5} />
                         <button
                           type="button"
                           onClick={() => toggleExpand(product.id)}
@@ -308,17 +312,32 @@ export default function ProductTable({
 
                     {/* 状态 */}
                     <td className={tdCls}>
-                      {product.status === 'active' ? (
-                        <span className="inline-flex items-center gap-1 text-xs text-green-600">
-                          <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                          启用
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-xs text-gray-400">
-                          <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
-                          停用
-                        </span>
-                      )}
+                      <div className="flex flex-col gap-1">
+                        {product.status === 'active' ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-green-600">
+                            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                            启用
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+                            <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
+                            停用
+                          </span>
+                        )}
+                        {/* 待补全 / 部分未补全 辅助徽标 */}
+                        {(!product.patternCode.trim() || !product.name.trim()) ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                            待补全
+                          </span>
+                        ) : (
+                          product.patternCode.trim() && product.name.trim() && product.bulkPrice > 0 &&
+                          (!product.packWeight.trim() || !product.packSize.trim())
+                        ) && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-orange-700 bg-orange-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                            部分未补全
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* 操作 */}
@@ -351,6 +370,7 @@ export default function ProductTable({
                               productId={product.id}
                               skus={product.skus}
                               skuCount={product.skuCount}
+                              imagesByColor={product.productImagesByColor}
                               highlightTerms={skuHighlightTerms}
                               onRequestAddSku={onRequestAddSku}
                               onBulkDeleteSkus={onBulkDeleteSkus}

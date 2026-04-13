@@ -2,7 +2,7 @@
 
 /* ============================================================
  * 编辑产品信息弹窗
- * 字段：款号 / 名称 / 分类 / 币种 / 包装 / 价格
+ * 字段：款号 / 产品名称（内部款式名）/ 分类 / 币种 / 包装 / 价格
  * 可选：同步更新所有 SKU 价格
  * 危险区：停用 / 启用产品（需要二次确认）
  * ============================================================ */
@@ -134,8 +134,9 @@ export default function EditProductModal({
               <input type="text" value={patternCode} onChange={(e) => setPatternCode(e.target.value)} className={inputCls} />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">产品名称</label>
+              <label className="block text-xs font-medium text-gray-600 mb-1">产品名称（内部）</label>
               <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
+              <p className="text-[11px] text-gray-500 mt-0.5">内部款式统称，与订单里的 Style Name（按 SKU）不是同一字段。</p>
             </div>
           </div>
 

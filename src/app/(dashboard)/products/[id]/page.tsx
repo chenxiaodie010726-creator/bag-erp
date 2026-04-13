@@ -4,15 +4,17 @@
 
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import {
   COLOR_MAP,
   COLOR_NAME_MAP,
-  COLOR_NAME_ZH_MAP,
   type ProductListItem,
+  type SkuItem,
 } from '../_components/mockData';
+import AddSkuModal, { type AddSkuPayload } from '../_components/AddSkuModal';
+import SkuChineseColorCell from '../_components/SkuChineseColorCell';
 import { loadProductById, saveProduct } from '../_components/loadFromStorage';
 import { resolveHexForProductSku, isLightColorHex } from '@/lib/colorDisplay';
 import { useColorRegistry } from '@/hooks/useColorRegistry';
@@ -22,10 +24,6 @@ const CURRENCY_SYMBOL: Record<string, string> = {
 };
 const LIGHT = new Set(['WHT', 'CRM', 'LPK', 'LBL', 'BGE']);
 const EMPTY_GALLERY: string[] = [];
-
-function resolveHex(code: string) {
-  return COLOR_MAP[code] ?? (code.startsWith('#') ? code : '#9ca3af');
-}
 
 function deriveProductTags(p: ProductListItem): string[] {
   return [p.category, '热销', '现货'].filter(Boolean);
@@ -105,6 +103,7 @@ function ImageGallery({
 }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const mainInputRef = useRef<HTMLInputElement>(null);
   const thumbInputRef = useRef<HTMLInputElement>(null);
 
@@ -118,6 +117,15 @@ function ImageGallery({
       return Math.min(i, images.length - 1);
     });
   }, [images]);
+
+  useEffect(() => {
+    if (!lightboxOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setLightboxOpen(false);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightboxOpen]);
 
   function readFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -145,11 +153,24 @@ function ImageGallery({
     setActiveIdx((i) => (i + 1) % len);
   };
 
+  function lightboxPrev(e: React.MouseEvent) {
+    e.stopPropagation();
+    const len = images.length;
+    if (len <= 1) return;
+    setActiveIdx((i) => (i - 1 + len) % len);
+  }
+  function lightboxNext(e: React.MouseEvent) {
+    e.stopPropagation();
+    const len = images.length;
+    if (len <= 1) return;
+    setActiveIdx((i) => (i + 1) % len);
+  }
+
   return (
-    <div className="w-full lg:w-[260px] shrink-0 space-y-2">
+    <div className="mx-auto w-full max-w-[200px] shrink-0 space-y-2 lg:mx-0">
       <div
         className={[
-          'relative aspect-square rounded-2xl border-2 transition-colors overflow-hidden cursor-pointer select-none',
+          'relative aspect-square rounded-xl border-2 transition-colors overflow-hidden cursor-pointer select-none',
           dragging ? 'border-blue-400 bg-blue-50' : 'border-dashed border-gray-200 bg-gray-50',
         ].join(' ')}
         onClick={() => !images.length && mainInputRef.current?.click()}
@@ -159,23 +180,35 @@ function ImageGallery({
       >
         {images.length > 0 ? (
           <>
-            <img src={images[activeIdx]} alt="" className="w-full h-full object-cover" onClick={(e) => e.stopPropagation()} />
+            <button
+              type="button"
+              title="点击查看大图"
+              className="absolute inset-0 z-10 block w-full h-full p-0 border-0 cursor-zoom-in bg-transparent"
+              onClick={(e) => {
+                e.stopPropagation();
+                setLightboxOpen(true);
+              }}
+            >
+              <img src={images[activeIdx]} alt="" className="w-full h-full object-cover pointer-events-none" />
+            </button>
             {images.length > 1 && (
               <>
                 <button type="button" onClick={(e) => { e.stopPropagation(); prev(); }}
-                  className="absolute left-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center bg-white/80 hover:bg-white rounded-full shadow text-gray-600 text-sm transition-colors">‹</button>
+                  className="absolute left-2 top-1/2 z-20 -translate-y-1/2 w-7 h-7 flex items-center justify-center bg-white/80 hover:bg-white rounded-full shadow text-gray-600 text-sm transition-colors">‹</button>
                 <button type="button" onClick={(e) => { e.stopPropagation(); next(); }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center bg-white/80 hover:bg-white rounded-full shadow text-gray-600 text-sm transition-colors">›</button>
+                  className="absolute right-2 top-1/2 z-20 -translate-y-1/2 w-7 h-7 flex items-center justify-center bg-white/80 hover:bg-white rounded-full shadow text-gray-600 text-sm transition-colors">›</button>
               </>
             )}
-            <div className="absolute bottom-2 right-2 px-2 py-0.5 bg-black/40 text-white text-xs rounded-full">{activeIdx + 1}/{images.length}</div>
+            <div className="absolute bottom-2 right-2 z-20 px-2 py-0.5 bg-black/40 text-white text-xs rounded-full">{activeIdx + 1}/{images.length}</div>
             <button type="button" onClick={(e) => { e.stopPropagation(); mainInputRef.current?.click(); }}
-              className="absolute bottom-2 left-2 px-2 py-0.5 bg-black/40 hover:bg-black/60 text-white text-xs rounded-full transition-colors">+ 上传</button>
+              className="absolute bottom-2 left-2 z-20 px-2 py-0.5 bg-black/40 hover:bg-black/60 text-white text-xs rounded-full transition-colors">+ 上传</button>
           </>
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-400">
-            <span className="text-5xl">{placeholder}</span>
-            <span className="text-xs text-center px-4">点击上传 {colorKey} 颜色主图</span>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-2 text-gray-400">
+            <span className="text-3xl leading-none">{placeholder}</span>
+            <span className="text-center text-sm font-medium text-gray-500">
+              {colorKey === 'default' ? '点击上传 颜色主图' : `点击上传 ${colorKey} 颜色主图`}
+            </span>
           </div>
         )}
         <input ref={mainInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => readFiles(e.target.files)} />
@@ -197,7 +230,62 @@ function ImageGallery({
         </div>
       )}
 
-      {images.length === 0 && <p className="text-xs text-center text-gray-400">支持 JPG、PNG、WebP；保存后写入产品与列表</p>}
+      {images.length === 0 && (
+        <p className="text-xs text-center text-gray-400 leading-relaxed">
+          支持 JPG、PNG、WebP；保存后写入产品与列表
+        </p>
+      )}
+
+      {lightboxOpen && images.length > 0 && images[activeIdx] && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/85 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="图片预览"
+          onClick={() => setLightboxOpen(false)}
+        >
+          <button
+            type="button"
+            className="absolute top-4 right-4 z-10 w-10 h-10 flex items-center justify-center rounded-full bg-white/10 text-white text-2xl leading-none hover:bg-white/20 transition-colors"
+            onClick={(e) => {
+              e.stopPropagation();
+              setLightboxOpen(false);
+            }}
+            aria-label="关闭"
+          >
+            ×
+          </button>
+          {images.length > 1 && (
+            <>
+              <button
+                type="button"
+                className="absolute left-4 top-1/2 -translate-y-1/2 z-10 w-11 h-11 flex items-center justify-center rounded-full bg-white/15 text-white text-xl hover:bg-white/25 transition-colors"
+                onClick={lightboxPrev}
+                aria-label="上一张"
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                className="absolute right-4 top-1/2 -translate-y-1/2 z-10 w-11 h-11 flex items-center justify-center rounded-full bg-white/15 text-white text-xl hover:bg-white/25 transition-colors"
+                onClick={lightboxNext}
+                aria-label="下一张"
+              >
+                ›
+              </button>
+            </>
+          )}
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-white/80 text-sm">
+            {activeIdx + 1} / {images.length}
+          </div>
+          <img
+            src={images[activeIdx]}
+            alt=""
+            className="max-w-full max-h-[90vh] w-auto h-auto object-contain shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -232,12 +320,12 @@ function SidebarFiles() {
   }
 
   return (
-    <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-      <h3 className="text-sm font-semibold text-gray-800 mb-3">相关文件</h3>
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <h3 className="mb-3 text-sm font-semibold text-gray-800">相关文件</h3>
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
-        className="w-full py-2 text-sm border border-dashed border-gray-200 rounded-lg text-gray-500 hover:bg-gray-50 hover:border-gray-400 transition-colors mb-3"
+        className="mb-3 w-full rounded-lg border border-dashed border-gray-200 py-2 text-sm text-gray-500 transition-colors hover:border-gray-300 hover:bg-gray-50"
       >
         + 上传文件
       </button>
@@ -274,12 +362,14 @@ export default function ProductDetailPage() {
 
   const [product, setProduct] = useState<ProductListItem | null>(null);
   const [tab, setTab] = useState<'sku' | 'price' | 'stock' | 'log' | 'cost' | 'usage'>('sku');
-  const [activeColor, setActiveColor] = useState<string>('');
+  /** 与 SKU 行一一对应；图库仍按该 SKU 的 colorCode 取 productImagesByColor */
+  const [activeSkuId, setActiveSkuId] = useState<string>('');
   /** 与保存、列表主图同步 */
   const [imagesByColor, setImagesByColor] = useState<Record<string, string[]>>({});
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [saveFlash, setSaveFlash] = useState<string | null>(null);
+  const [addSkuOpen, setAddSkuOpen] = useState(false);
   const historyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -287,7 +377,7 @@ export default function ProductDetailPage() {
     setProduct(loaded);
     if (loaded) {
       setImagesByColor(seedImagesByColor(loaded));
-      if (loaded.colors?.length) setActiveColor(loaded.colors[0]);
+      setActiveSkuId(loaded.skus[0]?.id ?? '');
     }
   }, [id]);
 
@@ -334,6 +424,41 @@ export default function ProductDetailPage() {
     window.setTimeout(() => setSaveFlash(null), 2500);
   }, []);
 
+  const handleAddSku = useCallback(
+    (productId: string, payload: AddSkuPayload) => {
+      if (!product || product.id !== productId) return;
+      const colorCode = payload.colorCode.toUpperCase();
+      const newSku: SkuItem = {
+        id: `${product.id}-sku-${Date.now()}`,
+        skuName: payload.skuCode,
+        colorCode,
+        colorNameZh: payload.colorNameZh || undefined,
+        skuCode: payload.skuCode,
+        stock: payload.stock,
+        bulkPrice: payload.bulkPrice,
+        dropshipPrice: payload.dropshipPrice,
+        status: payload.status,
+        updatedAt: new Date().toISOString().slice(0, 10).replace(/-/g, '/'),
+      };
+      const nextColors = product.colors.includes(colorCode) ? product.colors : [...product.colors, colorCode];
+      const nextSkus = [...product.skus, newSku];
+      const mergedImages = { ...imagesByColor, [colorCode]: imagesByColor[colorCode] ?? [] };
+      const next: ProductListItem = {
+        ...product,
+        colors: nextColors,
+        skus: nextSkus,
+        skuCount: nextSkus.length,
+        productImagesByColor: mergedImages,
+        imageUrl: deriveListImageUrl(nextColors, mergedImages),
+      };
+      saveProduct(next);
+      setProduct(next);
+      setImagesByColor(mergedImages);
+      setActiveSkuId(newSku.id);
+    },
+    [product, imagesByColor],
+  );
+
   if (!id) return <p className="text-sm text-gray-500">无效链接</p>;
 
   if (!product) {
@@ -347,18 +472,42 @@ export default function ProductDetailPage() {
 
   const sym = CURRENCY_SYMBOL[product.currency] ?? product.currency;
 
+  const activeSku = product.skus.find((s) => s.id === activeSkuId) ?? product.skus[0];
+  const galleryColorKey = (activeSku?.colorCode?.trim() || product.colors[0] || 'default') as string;
+
+  const metaCell = (label: string, children: ReactNode) => (
+    <div className="min-w-0">
+      <div className="text-[11px] leading-none text-gray-400">{label}</div>
+      <div className="mt-1 min-w-0 text-sm leading-tight text-gray-800">{children}</div>
+    </div>
+  );
+
   return (
-    <div className="flex flex-col gap-5 max-w-[1400px] mx-auto pb-10">
-      {/* 面包屑 + 顶栏 */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <nav className="text-sm text-gray-500 flex items-center gap-2">
-          <Link href="/products" className="hover:text-gray-800">产品列表</Link>
+    <div className="mx-auto max-w-[1440px] px-4 pb-10 pt-2 sm:px-6">
+      <AddSkuModal
+        open={addSkuOpen}
+        product={product}
+        onClose={() => setAddSkuOpen(false)}
+        onConfirm={handleAddSku}
+      />
+
+      {/* 顶栏：面包屑 + 操作（参考稿：浅色底栏分隔） */}
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 pb-4">
+        <nav className="flex items-center gap-2 text-sm text-gray-500">
+          <Link href="/products" className="transition-colors hover:text-gray-800">
+            产品列表
+          </Link>
           <span className="text-gray-300">/</span>
-          <span className="text-gray-800 font-medium">{product.patternCode}</span>
+          <span className="font-medium text-gray-900">{product.patternCode}</span>
         </nav>
-        <div className="flex items-center gap-2 flex-wrap justify-end">
-          <button type="button" onClick={() => router.push('/products')}
-            className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50">返回列表</button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => router.push('/products')}
+            className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-600 transition-colors hover:bg-gray-50"
+          >
+            返回列表
+          </button>
           <div className="relative" ref={historyRef}>
             <button
               type="button"
@@ -366,13 +515,15 @@ export default function ProductDetailPage() {
                 setHistoryEntries(loadHistoryEntries(id));
                 setHistoryOpen((v) => !v);
               }}
-              className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50"
+              className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-600 transition-colors hover:bg-gray-50"
             >
               历史版本 ▾
             </button>
             {historyOpen && (
-              <div className="absolute right-0 top-full mt-1 z-40 w-80 max-h-72 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg py-1 text-left">
-                <p className="px-3 py-2 text-xs text-gray-500 border-b border-gray-100">保存时自动记录（最多 {MAX_HISTORY} 条），点击可恢复</p>
+              <div className="absolute right-0 top-full z-40 mt-1 max-h-72 w-80 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 text-left shadow-lg">
+                <p className="border-b border-gray-100 px-3 py-2 text-xs text-gray-500">
+                  保存时自动记录（最多 {MAX_HISTORY} 条），点击可恢复
+                </p>
                 {historyEntries.length === 0 ? (
                   <p className="px-3 py-4 text-sm text-gray-400">暂无历史，保存产品后会生成快照</p>
                 ) : (
@@ -381,9 +532,9 @@ export default function ProductDetailPage() {
                       key={`${e.at}-${i}`}
                       type="button"
                       onClick={() => handleRestoreVersion(e)}
-                      className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 border-b border-gray-50 last:border-0"
+                      className="w-full border-b border-gray-50 px-3 py-2 text-left text-sm last:border-0 hover:bg-gray-50"
                     >
-                      <span className="block text-gray-800 font-medium">
+                      <span className="block font-medium text-gray-800">
                         {new Date(e.at).toLocaleString('zh-CN', { hour12: false })}
                       </span>
                       <span className="text-xs text-gray-500">
@@ -398,139 +549,194 @@ export default function ProductDetailPage() {
               </div>
             )}
           </div>
-          <button type="button" className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg text-gray-400 cursor-not-allowed" title="敬请期待">
+          <button
+            type="button"
+            className="cursor-not-allowed rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-400"
+            title="敬请期待"
+          >
             更多操作 ▾
           </button>
-          {saveFlash && (
-            <span className="text-xs text-green-600 font-medium">{saveFlash}</span>
-          )}
+          {saveFlash && <span className="text-xs font-medium text-green-600">{saveFlash}</span>}
+          <button
+            type="button"
+            onClick={() => setAddSkuOpen(true)}
+            className="rounded-lg border border-gray-300 bg-white px-4 py-1.5 text-sm font-medium text-gray-800 transition-colors hover:bg-gray-50"
+          >
+            + 添加 SKU
+          </button>
           <button
             type="button"
             onClick={handleSave}
-            className="px-4 py-1.5 text-sm font-medium bg-gray-900 text-white rounded-lg hover:bg-gray-700"
+            className="rounded-lg bg-gray-900 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-gray-800"
           >
             保存
           </button>
         </div>
-      </div>
+      </header>
 
-      <div className="flex gap-6 items-start">
-        {/* 主内容区 */}
-        <div className="flex-1 min-w-0 space-y-4">
-          <div className="space-y-3">
-            {/* 图库 + 基础信息 */}
-            <div className="flex flex-col lg:flex-row gap-5">
-              <ImageGallery
-                placeholder="👜"
-                colorKey={activeColor || (product.colors[0] ?? 'default')}
-                images={imagesByColor[activeColor || (product.colors[0] ?? 'default')] ?? EMPTY_GALLERY}
-                onImagesChange={(next) => {
-                  const key = activeColor || (product.colors[0] ?? 'default');
-                  setImagesByColor((prev) => ({ ...prev, [key]: next }));
-                }}
-              />
+      <div className="mt-6 flex flex-col gap-6 lg:flex-row lg:items-start lg:gap-8">
+        {/* 主列 */}
+        <div className="min-w-0 flex-1 space-y-6">
+          {/* 主信息卡：左主图 | 右为「标题+颜色变体同行」→副标题与创建日期→字段→三信息卡 */}
+          <section className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
+            <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:gap-6">
+              <div className="mx-auto shrink-0 lg:mx-0 lg:w-[200px]">
+                <ImageGallery
+                  placeholder="👜"
+                  colorKey={galleryColorKey}
+                  images={imagesByColor[galleryColorKey] ?? EMPTY_GALLERY}
+                  onImagesChange={(next) => {
+                    setImagesByColor((prev) => ({ ...prev, [galleryColorKey]: next }));
+                  }}
+                />
+              </div>
 
-              <div className="flex-1 space-y-3">
-                <div className="flex flex-wrap items-start gap-3">
-                  <h1 className="text-2xl font-semibold text-gray-900">{product.patternCode}</h1>
-                  {product.status === 'active' ? (
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-100">启用</span>
-                  ) : (
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500 border border-gray-200">停用</span>
+              <div className="min-w-0 flex-1 space-y-3">
+                {/* 第 1 行：左侧标题+状态，右侧颜色变体（与设计稿箭头一致） */}
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 flex-wrap items-center gap-3">
+                    <h1 className="text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl">{product.patternCode}</h1>
+                    {product.status === 'active' ? (
+                      <span className="inline-flex items-center rounded-full border border-green-100 bg-green-50 px-2.5 py-0.5 text-xs font-medium text-green-700">
+                        启用
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-500">
+                        停用
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+                    <span className="text-xs text-gray-400">颜色变体</span>
+                    {product.skus.length === 0 ? (
+                      <span className="text-xs text-gray-400">暂无 SKU</span>
+                    ) : (
+                      product.skus.map((sku) => {
+                        const hex = resolveHexForProductSku(sku, colorRegistry);
+                        const light = LIGHT.has(sku.colorCode) || isLightColorHex(hex);
+                        const isActive =
+                          activeSkuId === sku.id || (!activeSkuId && sku.id === product.skus[0]?.id);
+                        return (
+                          <button
+                            key={sku.id}
+                            type="button"
+                            title={sku.skuName || sku.colorCode}
+                            onClick={() => setActiveSkuId(sku.id)}
+                            className={[
+                              'h-8 w-8 rounded-md transition-all sm:h-9 sm:w-9',
+                              isActive
+                                ? 'ring-2 ring-gray-700 ring-offset-2'
+                                : 'opacity-85 hover:opacity-100',
+                            ].join(' ')}
+                            style={{
+                              backgroundColor: hex,
+                              boxShadow: light ? 'inset 0 0 0 1px #d1d5db' : undefined,
+                            }}
+                          />
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* 第 2 行：副标题 + 创建日期 */}
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+                  <p className="min-w-0 text-base text-gray-600">{product.name}</p>
+                  <div className="shrink-0 text-sm sm:text-right">
+                    <span className="text-gray-400">创建日期 </span>
+                    <span className="tabular-nums text-gray-800">{product.createdAt}</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-x-4 gap-y-2 border-t border-gray-100 pt-2 sm:grid-cols-3 sm:gap-x-6 sm:gap-y-2">
+                  {metaCell(
+                    '纸格款号',
+                    <span className="flex flex-wrap items-center gap-1.5 font-medium">
+                      {product.patternCode}
+                      <button
+                        type="button"
+                        className="text-xs font-normal text-blue-600 hover:underline"
+                        onClick={() => navigator.clipboard.writeText(product.patternCode)}
+                      >
+                        复制
+                      </button>
+                    </span>,
+                  )}
+                  {metaCell('产品名称', product.name)}
+                  {metaCell('采购币种', product.currency)}
+                  {metaCell('分类', product.category)}
+                  {metaCell(
+                    '状态',
+                    product.status === 'active' ? (
+                      <span className="text-green-600">启用</span>
+                    ) : (
+                      <span className="text-gray-400">停用</span>
+                    ),
+                  )}
+                  {metaCell(
+                    '标签',
+                    <div className="flex flex-wrap gap-1">
+                      {deriveProductTags(product).map((t, i) => (
+                        <span
+                          key={i}
+                          className="rounded-full border border-gray-200 bg-gray-100 px-1.5 py-px text-[11px] leading-tight text-gray-700"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>,
                   )}
                 </div>
-                <p className="text-base text-gray-600">{product.name}</p>
 
-                {/* 颜色变体 — 点击切换主图 */}
-                <div className="flex flex-wrap gap-1.5 items-center">
-                  <span className="text-xs text-gray-400 mr-1">颜色变体</span>
-                  {product.colors.map((code) => {
-                    const hex = resolveHex(code);
-                    const light = LIGHT.has(code);
-                    const isActive = activeColor === code;
-                    return (
-                      <button
-                        key={code}
-                        type="button"
-                        title={`切换到 ${code}`}
-                        onClick={() => setActiveColor(code)}
-                        className={[
-                          'w-8 h-8 rounded-md transition-all',
-                          isActive
-                            ? 'ring-2 ring-offset-2 ring-gray-600 scale-110'
-                            : 'hover:scale-105 opacity-80 hover:opacity-100',
-                        ].join(' ')}
-                        style={{
-                          backgroundColor: hex,
-                          boxShadow: light ? 'inset 0 0 0 1px #d1d5db' : undefined,
-                        }}
-                      />
-                    );
-                  })}
-                </div>
-
-                {/* 字段信息：紧凑 table-like 布局 */}
-                <div className="text-sm divide-y divide-gray-50 border border-gray-100 rounded-xl overflow-hidden">
-                  {[
-                    ['纸格款号', <span className="font-medium text-gray-800 flex items-center gap-2" key="pc">
-                        {product.patternCode}
-                        <button type="button" className="text-xs text-blue-500 hover:underline"
-                          onClick={() => navigator.clipboard.writeText(product.patternCode)}>复制</button>
-                      </span>],
-                    ['产品名称', <span className="text-gray-800" key="nm">{product.name}</span>],
-                    ['分类', <span className="text-gray-800" key="cat">{product.category}</span>],
-                    ['创建日期', <span className="text-gray-800" key="cd">{product.createdAt}</span>],
-                    ['采购币种', <span className="text-gray-800" key="cur">{product.currency}</span>],
-                    ['状态', product.status === 'active'
-                      ? <span className="text-green-600" key="st">启用</span>
-                      : <span className="text-gray-400" key="st">停用</span>],
-                  ].map(([label, val]) => (
-                    <div key={String(label)} className="flex items-center px-3 py-2 bg-white hover:bg-gray-50/50">
-                      <span className="text-gray-400 w-20 shrink-0 text-xs">{label}</span>
-                      <span className="flex-1">{val}</span>
-                    </div>
-                  ))}
-                  <div className="flex items-start px-3 py-2 bg-white">
-                    <span className="text-gray-400 w-20 shrink-0 text-xs mt-0.5">标签</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {deriveProductTags(product).map((t, i) => (
-                        <span key={i} className="px-2 py-0.5 bg-gray-100 text-gray-700 text-xs rounded-full border border-gray-200">{t}</span>
-                      ))}
-                    </div>
+                {/* 三卡：主图右侧列内、元数据网格正下方 */}
+                <div className="grid grid-cols-1 gap-3 border-t border-gray-100 pt-3 sm:grid-cols-3">
+                  <div className="rounded-lg border border-gray-100 bg-gray-50/40 p-3">
+                    <h3 className="mb-2 text-xs font-semibold text-gray-800">包装信息</h3>
+                    <ul className="space-y-1.5 text-xs sm:text-sm">
+                      <li className="flex justify-between gap-2">
+                        <span className="text-gray-500">包装尺寸</span>
+                        <span className="text-right text-gray-800">{product.packSize ? product.packSize.replace(/×/g, '*') : '—'}</span>
+                      </li>
+                      <li className="flex justify-between gap-2">
+                        <span className="text-gray-500">包装重量</span>
+                        <span className="text-right text-gray-800">{product.packWeight || '—'}</span>
+                      </li>
+                    </ul>
+                  </div>
+                  <div className="rounded-lg border border-gray-100 bg-gray-50/40 p-3">
+                    <h3 className="mb-2 text-xs font-semibold text-gray-800">纸箱设置</h3>
+                    <ul className="space-y-1.5 text-xs sm:text-sm">
+                      <li className="flex justify-between gap-2">
+                        <span className="text-gray-500">外箱尺寸</span>
+                        <span className="text-right text-gray-800">50*40*35 cm</span>
+                      </li>
+                      <li className="flex justify-between gap-2">
+                        <span className="text-gray-500">装箱数</span>
+                        <span className="text-right text-gray-800">20 PCS/CTN</span>
+                      </li>
+                    </ul>
+                  </div>
+                  <div className="rounded-lg border border-gray-100 bg-gray-50/40 p-3">
+                    <h3 className="mb-2 text-xs font-semibold text-gray-800">产品信息</h3>
+                    <ul className="space-y-1.5 text-xs sm:text-sm">
+                      <li className="flex justify-between gap-2">
+                        <span className="text-gray-500">材质</span>
+                        <span className="text-right text-gray-800">PU 皮革（示例）</span>
+                      </li>
+                      <li className="flex justify-between gap-2">
+                        <span className="text-gray-500">单品重量</span>
+                        <span className="text-right text-gray-800">{product.packWeight || '—'}</span>
+                      </li>
+                    </ul>
                   </div>
                 </div>
               </div>
             </div>
-
-            {/* 规格三栏 */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">产品信息</h3>
-                <ul className="space-y-1.5 text-sm">
-                  <li className="flex justify-between gap-2"><span className="text-gray-400">材质</span><span className="text-gray-700">PU 皮革（示例）</span></li>
-                  <li className="flex justify-between gap-2"><span className="text-gray-400">单品重量</span><span className="text-gray-700">{product.packWeight}</span></li>
-                </ul>
-              </div>
-              <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">包装信息</h3>
-                <ul className="space-y-1.5 text-sm">
-                  <li className="flex justify-between gap-2"><span className="text-gray-400">包装尺寸</span><span className="text-gray-700">{product.packSize.replace(/×/g, '*')}</span></li>
-                  <li className="flex justify-between gap-2"><span className="text-gray-400">包装重量</span><span className="text-gray-700">{product.packWeight}</span></li>
-                </ul>
-              </div>
-              <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-                <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">纸箱设置</h3>
-                <ul className="space-y-1.5 text-sm">
-                  <li className="flex justify-between gap-2"><span className="text-gray-400">外箱尺寸</span><span className="text-gray-700">50*40*35 cm</span></li>
-                  <li className="flex justify-between gap-2"><span className="text-gray-400">装箱数</span><span className="text-gray-700">20 PCS/CTN</span></li>
-                </ul>
-              </div>
-            </div>
-          </div>
+          </section>
 
           {/* 标签页 */}
-          <div className="rounded-xl border border-gray-100 bg-white shadow-sm overflow-hidden">
-            <div className="flex border-b border-gray-100 overflow-x-auto">
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+            <div className="flex overflow-x-auto border-b border-gray-100">
               {([ ['sku', `SKU（${product.skus.length}）`], ['price', '价格管理'], ['stock', '库存记录'], ['log', '操作记录'], ['cost', '成本表'], ['usage', '用量表'] ] as const).map(([key, label]) => (
                 <button key={key} type="button" onClick={() => setTab(key)}
                   className={['px-5 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors',
@@ -560,7 +766,6 @@ export default function ProductDetailPage() {
                       {product.skus.map((sku) => {
                         const hex = resolveHexForProductSku(sku, colorRegistry);
                         const light = LIGHT.has(sku.colorCode) || isLightColorHex(hex);
-                        const zh = sku.colorNameZh ?? COLOR_NAME_ZH_MAP[sku.colorCode] ?? '—';
                         const en =
                           COLOR_NAME_MAP[sku.colorCode] ??
                           (sku.colorPhrase?.trim() || sku.colorCode);
@@ -569,7 +774,9 @@ export default function ProductDetailPage() {
                             <td className="py-2.5 pr-3">
                               <span className="inline-block w-7 h-7 rounded-md" style={{ backgroundColor: hex, border: light ? '1px solid #d1d5db' : 'none' }} />
                             </td>
-                            <td className="py-2.5 pr-3 text-gray-800">{zh}</td>
+                            <td className="py-2.5 pr-3 text-gray-800">
+                              <SkuChineseColorCell sku={sku} />
+                            </td>
                             <td className="py-2.5 pr-3 text-gray-500">{en}</td>
                             <td className="py-2.5 pr-3 font-mono text-xs">{sku.skuCode}</td>
                             <td className="py-2.5 pr-3 text-right font-mono">{sym}{sku.dropshipPrice.toFixed(2)}</td>
@@ -597,12 +804,12 @@ export default function ProductDetailPage() {
           </div>
         </div>
 
-        {/* 右侧边栏 */}
-        <aside className="hidden xl:block w-64 shrink-0 space-y-4">
+        {/* 右侧边栏（参考稿：相关文件 + 操作记录） */}
+        <aside className="w-full shrink-0 space-y-4 lg:w-72 lg:max-w-[20rem] xl:max-w-[22rem]">
           <SidebarFiles />
-          <div className="rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
-            <h3 className="text-sm font-semibold text-gray-800 mb-3">操作记录</h3>
-            <ul className="space-y-3 text-xs text-gray-500 border-l border-gray-200 pl-3 ml-1">
+          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+            <h3 className="mb-3 text-sm font-semibold text-gray-800">操作记录</h3>
+            <ul className="ml-1 space-y-3 border-l border-gray-200 pl-3 text-xs text-gray-500">
               <li>
                 <span className="block text-gray-400">今天 10:23</span>
                 <span>管理员 查看详情页</span>
