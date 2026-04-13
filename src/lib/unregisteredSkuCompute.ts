@@ -6,13 +6,12 @@
 import type { OrderDetailData } from '@/app/(dashboard)/orders/[id]/_components/mockData';
 import { getOrderDetail } from '@/app/(dashboard)/orders/[id]/_components/mockData';
 import type { OrderItem } from '@/app/(dashboard)/orders/_components/mockData';
-import { MOCK_ORDERS } from '@/app/(dashboard)/orders/_components/mockData';
 import type { UnregisteredSkuEntry } from '@/lib/orderInventorySync';
 import { STORAGE_KEYS } from '@/lib/storageKeys';
 import { getAllKnownSkus } from '@/lib/skuLookup';
 
 function loadOrdersList(): OrderItem[] {
-  if (typeof window === 'undefined') return MOCK_ORDERS;
+  if (typeof window === 'undefined') return [];
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.ORDERS);
     if (raw) {
@@ -22,7 +21,7 @@ function loadOrdersList(): OrderItem[] {
   } catch {
     /* ignore */
   }
-  return MOCK_ORDERS;
+  return [];
 }
 
 /** 与订单详情页一致：优先用已保存的明细，否则用 getOrderDetail 生成/硬编码 */

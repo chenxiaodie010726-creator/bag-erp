@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp /tmp/suppliers_mock.ts \"E:/bag-erp/.claude/worktrees/nostalgic-williams/src/app/\\(dashboard\\)/suppliers/_components/mockData.ts\")",
+      "Bash(cp /tmp/prices_mock.ts \"E:/bag-erp/.claude/worktrees/nostalgic-williams/src/app/\\(dashboard\\)/prices/_components/mockData.ts\")",
+      "Bash(npm run:*)",
+      "Bash(mkdir -p \"E:/bag-erp/.claude/worktrees/nostalgic-williams/src/app/api/suppliers\")",
+      "Bash(mkdir -p \"E:/bag-erp/.claude/worktrees/nostalgic-williams/src/app/api/suppliers/[id]\")",
+      "Bash(mkdir -p \"E:/bag-erp/.claude/worktrees/nostalgic-williams/src/app/api/products\")",
+      "Bash(mkdir -p \"E:/bag-erp/.claude/worktrees/nostalgic-williams/src/app/api/products/[id]\")",
+      "Bash(mkdir -p \"E:/bag-erp/.claude/worktrees/nostalgic-williams/src/app/api/orders\")"
+    ]
+  }
+}

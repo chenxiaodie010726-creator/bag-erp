@@ -23,15 +23,4 @@ export interface OrderItem {
  *   TEST-HILO-BLK  → 未注册（会进入「未录入」，可从那里录入到产品）
  * 金额 = 80×13 + 160×13 = $3,120
  * ============================================================ */
-export const MOCK_ORDERS: OrderItem[] = [
-  {
-    id: 'order_test_0',
-    poNumber: 'PO#TEST001',
-    amount: 3120,
-    poQty: 2,
-    batches: 1,
-    status: '已确认',
-    orderDate: '2026-04-09',
-    customerName: 'Test Customer Co.',
-  },
-];
+export const MOCK_ORDERS: OrderItem[] = [];

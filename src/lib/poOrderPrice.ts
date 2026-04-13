@@ -4,7 +4,6 @@
  * ============================================================ */
 
 import type { OrderItem } from '@/app/(dashboard)/orders/_components/mockData';
-import { MOCK_ORDERS } from '@/app/(dashboard)/orders/_components/mockData';
 import type { OrderDetailData } from '@/app/(dashboard)/orders/[id]/_components/mockData';
 import { STORAGE_KEYS } from '@/lib/storageKeys';
 
@@ -17,7 +16,7 @@ function normPo(s: string): string {
  */
 export function buildSkuUnitPriceMapForPo(poNumber: string): Record<string, number> {
   const map: Record<string, number> = {};
-  let orders: OrderItem[] = MOCK_ORDERS;
+  let orders: OrderItem[] = [];
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.ORDERS);
     if (raw) {
@@ -25,7 +24,7 @@ export function buildSkuUnitPriceMapForPo(poNumber: string): Record<string, numb
       if (Array.isArray(parsed) && parsed.length > 0) orders = parsed as OrderItem[];
     }
   } catch {
-    /* 使用 MOCK_ORDERS */
+    /* ignore */
   }
 
   const order = orders.find((o) => normPo(o.poNumber) === normPo(poNumber));

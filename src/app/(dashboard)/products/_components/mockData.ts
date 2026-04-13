@@ -117,39 +117,7 @@ export interface ProductListItem {
  * 测试数据：1 个产品，含 1 个已注册 SKU（TEST-RALLY-GRN）
  * 订单中出现该 SKU 时不会进入「未录入」
  * ============================================================ */
-export const MOCK_PRODUCTS: ProductListItem[] = [
-  {
-    id: 'p-test-001',
-    patternCode: 'RALLY-01',
-    name: 'RALLY SHOULDER BAG',
-    category: '手袋',
-    imageUrl: null,
-    colors: ['GRN'],
-    bulkPrice: 13.00,
-    dropshipPrice: 15.86,
-    currency: 'USD',
-    packWeight: '0.50 kg',
-    packSize: '30×22×10 cm',
-    status: 'active',
-    createdAt: '2026/04/01',
-    skuCount: 1,
-    skus: [
-      {
-        id: 'sku-rally-grn',
-        skuName: 'RALLY-01-GRN',
-        colorCode: 'GRN',
-        colorNameZh: '绿色',
-        colorPhrase: 'GREEN',
-        skuCode: 'TEST-RALLY-GRN',
-        stock: 0,
-        bulkPrice: 13.00,
-        dropshipPrice: 15.86,
-        status: 'active',
-        updatedAt: '2026/04/01',
-      },
-    ],
-  },
-];
+export const MOCK_PRODUCTS: ProductListItem[] = [];
 
 /** 所有分类选项 */
 export const CATEGORY_OPTIONS = ['全部', '手袋', '钱包', '皮带', '卡包', '其他'] as const;

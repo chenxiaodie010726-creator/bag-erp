@@ -1,22 +1,22 @@
-import { MOCK_PRODUCTS, type ProductListItem } from '@/app/(dashboard)/products/_components/mockData';
-import { MOCK_SETS, type SetItem } from '@/app/(dashboard)/sets/_components/mockData';
+import type { ProductListItem } from '@/app/(dashboard)/products/_components/mockData';
+import type { SetItem } from '@/app/(dashboard)/sets/_components/mockData';
 import { STORAGE_KEYS } from './storageKeys';
 
 function loadProducts(): ProductListItem[] {
   try {
     const stored = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.PRODUCTS) : null;
-    return stored ? JSON.parse(stored) : MOCK_PRODUCTS;
+    return stored ? JSON.parse(stored) : [];
   } catch {
-    return MOCK_PRODUCTS;
+    return [];
   }
 }
 
 function loadSets(): SetItem[] {
   try {
     const stored = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.SETS) : null;
-    return stored ? JSON.parse(stored) : MOCK_SETS;
+    return stored ? JSON.parse(stored) : [];
   } catch {
-    return MOCK_SETS;
+    return [];
   }
 }
 
