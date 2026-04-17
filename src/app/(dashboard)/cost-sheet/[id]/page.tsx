@@ -49,6 +49,8 @@ import {
 import { getCategoryUnitsDisplay, lookupMaterialUnitFromCatalog } from '@/lib/materialUnitCatalog';
 import { loadProductByPatternCode } from '@/app/(dashboard)/products/_components/loadFromStorage';
 import { EmbossStampReferencePanel } from '@/app/(dashboard)/cost-sheet/_components/EmbossStampReferencePanel';
+import ColorMapChineseColorCell from '@/app/(dashboard)/cost-sheet/_components/ColorMapChineseColorCell';
+import { resolveColorMapChineseColor } from '@/lib/skuColorZh';
 import { isEmbossStampLabel } from '@/data/embossStampCatalog';
 import type {
   CostSheet,
@@ -803,8 +805,8 @@ export default function CostSheetDetailPage() {
   const inputMatSmCls = `w-full min-w-0 max-w-full px-0.5 py-0.5 text-xs border border-gray-200 rounded text-center tabular-nums ${noSpinnerCls} focus:outline-none focus:ring-1 focus:ring-blue-400`;
   const inputPartNameCls = `w-full min-w-0 max-w-full px-0.5 py-0.5 text-xs border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-400`;
 
-  /** 与「成本表导入模板」一致：9 列填写项 + 5 列系统计算（无「类别」列） */
-  const materialAddColSpan = editing ? 15 : 14;
+  /** 与「成本表导入模板」一致：物料区首列为类别，其余与 xlsx 对齐 + 5 列系统计算 */
+  const materialAddColSpan = editing ? 16 : 15;
 
   return (
     <div className="flex flex-col gap-4">
@@ -959,7 +961,13 @@ export default function CostSheetDetailPage() {
             </div>
           </div>
         ) : (
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(19rem,30%)_minmax(9.5rem,15%)_minmax(0,1fr)] xl:items-stretch xl:gap-6">
+        <div
+          className={`grid grid-cols-1 gap-4 xl:items-stretch xl:gap-6 ${
+            (ds.color_material_map ?? []).length > 0
+              ? 'xl:grid-cols-[minmax(19rem,30%)_minmax(9.5rem,15%)_minmax(0,1fr)]'
+              : 'xl:grid-cols-[minmax(19rem,30%)_minmax(0,1fr)]'
+          }`}
+        >
           {/* 左：大图 + 款号顶对齐图片上沿 */}
           <div className="flex min-w-0 items-start gap-5">
             <div className="h-28 w-28 shrink-0 overflow-hidden rounded-xl border border-gray-200 bg-gradient-to-br from-slate-100 to-slate-200 shadow-inner sm:h-32 sm:w-32 xl:h-36 xl:w-36">
@@ -1077,7 +1085,7 @@ export default function CostSheetDetailPage() {
                         : false;
                       return (
                         <tr key={entry.id} className="border-b border-gray-100/80 bg-white/80 last:border-0">
-                          <td className="truncate px-1.5 py-1 font-medium text-gray-800" title={entry.color_zh || undefined}>
+                          <td className="truncate px-1.5 py-1 font-medium text-gray-800" title={undefined}>
                             <span className="inline-flex max-w-full items-center gap-1">
                               {isNonStandard && !isMethodDiff && (
                                 <span
@@ -1090,7 +1098,9 @@ export default function CostSheetDetailPage() {
                                   做法
                                 </span>
                               )}
-                              <span className="truncate">{entry.color_zh || '—'}</span>
+                              <span className="min-w-0 truncate">
+                                <ColorMapChineseColorCell colorZh={entry.color_zh} colorEn={entry.color_en} compact />
+                              </span>
                             </span>
                           </td>
                           <td className="truncate px-1.5 py-1 text-center text-gray-700" title={entry.color_en || undefined}>
@@ -1215,33 +1225,35 @@ export default function CostSheetDetailPage() {
             )}
 
             {totals && (
-              <div className="mt-auto flex w-full min-w-0 flex-wrap items-end justify-center gap-x-6 gap-y-4 pt-4 sm:gap-x-10 sm:gap-y-3 xl:pb-1.5">
-                <div className="flex flex-wrap items-end justify-center divide-x divide-gray-200">
-                  {(
-                    [
-                      { label: '材料', val: totals.materialTotal },
-                      { label: '五金', val: totals.hardwareTotal },
-                      { label: '包装', val: totals.packagingTotal },
-                      { label: '工艺', val: totals.craftTotal },
-                      { label: '油边', val: totals.oilEdgeTotal },
-                      { label: '人工', val: totals.laborTotal },
-                    ] as const
-                  ).map(({ label, val }) => (
-                    <div
-                      key={label}
-                      className="flex min-w-[4.75rem] flex-col items-center justify-center px-5 text-center leading-tight first:pl-0 last:pr-0 sm:px-7"
-                    >
-                      <span className="text-sm text-gray-500">{label}</span>
-                      <span className="mt-0.5 text-base font-semibold tabular-nums text-gray-900">¥{val.toFixed(2)}</span>
+              <div className="mt-auto w-full min-w-0 pt-4 xl:pb-1.5">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between lg:gap-6">
+                  <div className="grid w-full min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                    {(
+                      [
+                        { label: '材料', val: totals.materialTotal },
+                        { label: '五金', val: totals.hardwareTotal },
+                        { label: '包装', val: totals.packagingTotal },
+                        { label: '工艺', val: totals.craftTotal },
+                        { label: '油边', val: totals.oilEdgeTotal },
+                        { label: '人工', val: totals.laborTotal },
+                      ] as const
+                    ).map(({ label, val }) => (
+                      <div
+                        key={label}
+                        className="flex min-w-0 flex-col items-center justify-center rounded-lg border border-gray-100 bg-gray-50/90 px-2 py-2.5 text-center leading-tight"
+                      >
+                        <span className="text-sm text-gray-500">{label}</span>
+                        <span className="mt-0.5 text-base font-semibold tabular-nums text-gray-900">¥{val.toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mx-auto shrink-0 lg:mx-0">
+                    <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-center">
+                      <p className="text-sm font-medium leading-none text-red-500/90">总成本</p>
+                      <p className="mt-1 text-3xl font-bold tabular-nums leading-none text-red-600">
+                        ¥{totals.grandTotal.toFixed(2)}
+                      </p>
                     </div>
-                  ))}
-                </div>
-                <div className="shrink-0 sm:ml-2">
-                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-center">
-                    <p className="text-sm font-medium leading-none text-red-500/90">总成本</p>
-                    <p className="mt-1 text-3xl font-bold tabular-nums leading-none text-red-600">
-                      ¥{totals.grandTotal.toFixed(2)}
-                    </p>
                   </div>
                 </div>
               </div>
@@ -1363,7 +1375,8 @@ export default function CostSheetDetailPage() {
               className={`w-full table-fixed border-collapse text-xs sm:text-sm ${pinMaterialTable ? 'relative' : ''}`}
             >
               <colgroup>
-                {/* 与桌面「成本表导入模板」列宽比例接近：部件偏宽，数字列偏窄 */}
+                {/* 与桌面「成本表导入模板」列宽比例接近：类别 + 部件偏宽，数字列偏窄 */}
+                <col className="w-[4.25rem]" />
                 <col className="w-[5.5rem]" />
                 <col className="w-[3rem]" />
                 <col className="w-[3rem]" />
@@ -1382,31 +1395,38 @@ export default function CostSheetDetailPage() {
               </colgroup>
               <thead>
                 <tr className="border-b border-gray-200">
-                  {/* 与 xlsx 第 5 行一致：A–F #333，G–I #D8DCE3；右侧为系统计算列 */}
+                  {/* 与导入模板一致：A 列类别；B–G #333，H–J #D8DCE3；本表按类别分组着色，首列仍显示类别名 */}
+                  <th
+                    className={`px-0.5 py-2 text-left text-[11px] font-semibold text-white bg-[#333333] ${
+                      pinMaterialTable ? 'sticky left-0 top-0 z-[37] shadow-[1px_0_0_0_rgb(229_231_235)]' : ''
+                    }`}
+                  >
+                    <span className="block leading-tight">类别</span>
+                  </th>
                   <th
                     className={`px-1 py-2 text-left text-[11px] font-semibold text-white bg-[#333333] ${
-                      pinMaterialTable ? 'sticky left-0 top-0 z-[36] shadow-[1px_0_0_0_rgb(229_231_235)]' : ''
+                      pinMaterialTable ? 'sticky left-[4.25rem] top-0 z-[36] shadow-[1px_0_0_0_rgb(229_231_235)]' : ''
                     }`}
                   >
                     <span className="block leading-tight">部件名称</span>
                   </th>
                   <th
                     className={`px-0.5 py-2 text-center text-[11px] font-semibold text-white bg-[#333333] ${
-                      pinMaterialTable ? 'sticky left-[5.5rem] top-0 z-[35] shadow-[1px_0_0_0_rgb(229_231_235)]' : ''
+                      pinMaterialTable ? 'sticky left-[9.75rem] top-0 z-[35] shadow-[1px_0_0_0_rgb(229_231_235)]' : ''
                     }`}
                   >
                     长
                   </th>
                   <th
                     className={`px-0.5 py-2 text-center text-[11px] font-semibold text-white bg-[#333333] ${
-                      pinMaterialTable ? 'sticky left-[8.5rem] top-0 z-[34] shadow-[1px_0_0_0_rgb(229_231_235)]' : ''
+                      pinMaterialTable ? 'sticky left-[12.75rem] top-0 z-[34] shadow-[1px_0_0_0_rgb(229_231_235)]' : ''
                     }`}
                   >
                     宽
                   </th>
                   <th
                     className={`px-0.5 py-2 text-center text-[11px] font-semibold text-white bg-[#333333] ${
-                      pinMaterialTable ? 'sticky left-[11.5rem] top-0 z-[33] shadow-[1px_0_0_0_rgb(229_231_235)]' : ''
+                      pinMaterialTable ? 'sticky left-[15.75rem] top-0 z-[33] shadow-[1px_0_0_0_rgb(229_231_235)]' : ''
                     }`}
                   >
                     件数
@@ -1506,10 +1526,37 @@ export default function CostSheetDetailPage() {
                                 : `${bg} hover:brightness-[0.99]`
                             }`}
                           >
+                            {(editing || idx === 0) && (
+                              <td
+                                rowSpan={!editing && items.length > 1 ? items.length : undefined}
+                                className={`min-w-0 px-0.5 py-1 align-middle ${
+                                  pinMaterialTable
+                                    ? 'sticky left-0 z-[28] bg-white/95 shadow-[1px_0_0_0_rgb(229_231_235)] group-hover:bg-white/90'
+                                    : ''
+                                }`}
+                              >
+                                {editing ? (
+                                  <input
+                                    type="text"
+                                    value={item.category}
+                                    onChange={(e) => updateMI(item.id, 'category', e.target.value)}
+                                    className={`${inputPartNameCls} text-center`}
+                                    title="类别"
+                                  />
+                                ) : (
+                                  <span
+                                    className="flex min-h-[2rem] items-center justify-center text-center text-xs font-medium text-gray-700"
+                                    title={cat}
+                                  >
+                                    {cat}
+                                  </span>
+                                )}
+                              </td>
+                            )}
                             <td
                               className={`min-w-0 px-1 py-1 align-top ${
                                 pinMaterialTable
-                                  ? 'sticky left-0 z-[27] bg-white/95 shadow-[1px_0_0_0_rgb(229_231_235)] group-hover:bg-white/90'
+                                  ? 'sticky left-[4.25rem] z-[27] bg-white/95 shadow-[1px_0_0_0_rgb(229_231_235)] group-hover:bg-white/90'
                                   : ''
                               }`}
                             >
@@ -1529,7 +1576,7 @@ export default function CostSheetDetailPage() {
                             <td
                               className={`min-w-0 px-0.5 py-1 text-center align-top ${
                                 pinMaterialTable
-                                  ? 'sticky left-[5.5rem] z-[26] bg-white/95 shadow-[1px_0_0_0_rgb(229_231_235)] group-hover:bg-white/90'
+                                  ? 'sticky left-[9.75rem] z-[26] bg-white/95 shadow-[1px_0_0_0_rgb(229_231_235)] group-hover:bg-white/90'
                                   : ''
                               }`}
                             >
@@ -1550,7 +1597,7 @@ export default function CostSheetDetailPage() {
                             <td
                               className={`min-w-0 px-0.5 py-1 text-center align-top ${
                                 pinMaterialTable
-                                  ? 'sticky left-[8.5rem] z-[25] bg-white/95 shadow-[1px_0_0_0_rgb(229_231_235)] group-hover:bg-white/90'
+                                  ? 'sticky left-[12.75rem] z-[25] bg-white/95 shadow-[1px_0_0_0_rgb(229_231_235)] group-hover:bg-white/90'
                                   : ''
                               }`}
                             >
@@ -1568,7 +1615,13 @@ export default function CostSheetDetailPage() {
                                 </span>
                               )}
                             </td>
-                            <td className="min-w-0 px-0.5 py-1 text-center align-top">
+                            <td
+                              className={`min-w-0 px-0.5 py-1 text-center align-top ${
+                                pinMaterialTable
+                                  ? 'sticky left-[15.75rem] z-[24] bg-white/95 shadow-[1px_0_0_0_rgb(229_231_235)] group-hover:bg-white/90'
+                                  : ''
+                              }`}
+                            >
                               {editing ? (
                                 <input
                                   type="number"
@@ -1705,8 +1758,9 @@ export default function CostSheetDetailPage() {
                         );
                       })}
                       <tr className="border-b border-gray-300 bg-gray-100">
-                        <td className="px-1 py-1.5 text-xs font-semibold text-red-600" colSpan={6}>
-                          <span className="text-[10px] font-normal text-gray-500">[{cat}]</span> 小计{' '}
+                        <td className="px-1 py-1.5 text-xs font-semibold text-red-600" colSpan={7}>
+                          小计{' '}
+                          <span className="text-[10px] font-normal text-gray-500">[{cat}]</span>{' '}
                           {editing && (
                             <button
                               type="button"
@@ -2479,14 +2533,26 @@ export default function CostSheetDetailPage() {
                 <tr key={entry.id} className={`border-b border-gray-100 ${idx % 2 === 0 && !isSpecialVariant ? 'bg-gray-50/50' : isMethodDiffRow ? 'bg-purple-50/30' : ''}`}>
                   <td className="px-3 py-1.5 font-semibold">
                     {editing ? (
-                      <input
-                        type="text"
-                        value={entry.color_zh}
-                        onChange={(e) => updateColorEntry(entry.id, 'color_zh', e.target.value)}
-                        className={inputLeftCls}
-                      />
+                      <div className="space-y-1">
+                        <input
+                          type="text"
+                          value={entry.color_zh}
+                          onChange={(e) => updateColorEntry(entry.id, 'color_zh', e.target.value)}
+                          className={inputLeftCls}
+                          placeholder="留空则按右侧英文自动翻译"
+                        />
+                        {!entry.color_zh.trim() && entry.color_en.trim() && (
+                          <p className="text-[10px] font-normal text-slate-500">
+                            将显示：
+                            <span className="font-medium text-slate-600">
+                              {resolveColorMapChineseColor('', entry.color_en).text}
+                            </span>
+                            （自动）
+                          </p>
+                        )}
+                      </div>
                     ) : (
-                      <span className="flex items-center gap-1.5">
+                      <span className="flex items-center gap-1.5 flex-wrap">
                         {isSpecialVariant && !isMethodDiffRow && (
                           <span
                             className="w-2.5 h-2.5 rounded-sm shrink-0 border border-black/10 inline-block"
@@ -2498,7 +2564,7 @@ export default function CostSheetDetailPage() {
                             做法
                           </span>
                         )}
-                        {entry.color_zh}
+                        <ColorMapChineseColorCell colorZh={entry.color_zh} colorEn={entry.color_en} />
                       </span>
                     )}
                   </td>

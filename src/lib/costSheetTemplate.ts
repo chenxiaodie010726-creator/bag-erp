@@ -61,15 +61,15 @@ function cl(ws: WS, r: number, c: number) { return ws.getCell(r, c); }
 // 成本表 Sheet
 // ─────────────────────────────────────────────────────────
 
-/** 列头：A=部件名称 B=长 C=宽 D=件数 E=布幅 F=损耗 G=油边/寸 H=过胶单价 I=备注（无「类别」列，主料/配料等在系统内维护） */
-const MAT_COLS = 9;
-const MAT_HEADERS = ['部件名称','长','宽','件数','布幅','损耗','油边/寸','过胶单价','备注'];
-// G/H/I（7–9 列）为可选列，浅色表头区分
-const SPECIAL_COLS = new Set([7, 8, 9]);
+/** 列头：A=类别 B=部件名称 C=长 D=宽 E=件数 F=布幅 G=损耗 H=油边/寸 I=过胶单价 J=备注（类别列请勿删除，用于主料/配料/里布等识别） */
+const MAT_COLS = 10;
+const MAT_HEADERS = ['类别','部件名称','长','宽','件数','布幅','损耗','油边/寸','过胶单价','备注'];
+// H/I/J（8–10 列）为可选列，浅色表头区分
+const SPECIAL_COLS = new Set([8, 9, 10]);
 
 async function buildCostSheetTab(wb: import('exceljs').Workbook, sheetName: string, isVariant: boolean) {
   const ws = wb.addWorksheet(sheetName);
-  [22, 8, 8, 6, 7, 7, 8, 9, 22].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  [12, 20, 8, 8, 6, 7, 7, 8, 9, 22].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
 
   // R1 标题
   ws.mergeCells(1, 1, 1, MAT_COLS);
@@ -121,8 +121,11 @@ async function buildCostSheetTab(wb: import('exceljs').Workbook, sheetName: stri
   // ── 物料数据行 ─────────────────────────────────────────
   let r = 6;
 
-  /** 写一条物料示例行（无类别列） */
+  /**
+   * 写一条物料示例行。`categoryCell`：新分组填「主料」「配料」等；同组续行传 null 表示 A 列留空（导入时继承上一行类别）。
+   */
   function exRow(
+    categoryCell: string | null,
     pName: string,
     len: number,
     w: number | null,
@@ -133,6 +136,7 @@ async function buildCostSheetTab(wb: import('exceljs').Workbook, sheetName: stri
     note?: string,
   ) {
     const vals: (string | number | null)[] = [
+      categoryCell,
       pName,
       len,
       w,
@@ -148,10 +152,11 @@ async function buildCostSheetTab(wb: import('exceljs').Workbook, sheetName: stri
       if (v !== null && v !== undefined) c.value = v as string | number;
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.rowFill } };
       c.border = thin('DDDDDD');
-      c.alignment = { horizontal: i > 0 ? 'center' : 'left', vertical: 'middle' };
+      const isCategoryOrPart = i === 0 || i === 1;
+      c.alignment = { horizontal: isCategoryOrPart ? 'left' : 'center', vertical: 'middle' };
       c.font = { size: 9, name: 'Arial' };
-      // F 列损耗：存小数，显示为百分比（3%）
-      if (i === 5 && typeof v === 'number') c.numFmt = '0.00%';
+      // G 列损耗：存小数，显示为百分比（3%）
+      if (i === 6 && typeof v === 'number') c.numFmt = '0.00%';
     });
     r++;
   }
@@ -169,14 +174,14 @@ async function buildCostSheetTab(wb: import('exceljs').Workbook, sheetName: stri
   }
 
   if (!isVariant) {
-    exRow('左右背带底', 17.125, 3.75, 2, 52);
-    exRow('前幅主料', 35.875, 0.875, 1, 52);
-    exRow('后幅主料', 37.125, 0.875, 2, 52, 10);
-    exRow('盖面配料', 14, 12.875, 1, 52);
-    exRow('箱头', 17.375, 4.625, 2, 54);
+    exRow('主料', '左右背带底', 17.125, 3.75, 2, 52);
+    exRow(null, '前幅主料', 35.875, 0.875, 1, 52);
+    exRow(null, '后幅主料', 37.125, 0.875, 2, 52, 10);
+    exRow('配料', '盖面配料', 14, 12.875, 1, 52);
+    exRow(null, '箱头', 17.375, 4.625, 2, 54);
     emptyRows(2);
   } else {
-    exRow('左右背带底（压花版）', 17.5, 3.625, 2, 52, 28);
+    exRow('主料', '左右背带底（压花版）', 17.5, 3.625, 2, 52, 28);
     emptyRows(2);
   }
 
@@ -236,7 +241,7 @@ async function buildCostSheetTab(wb: import('exceljs').Workbook, sheetName: stri
   ws.mergeCells(r, 1, r, MAT_COLS);
   const hint = cl(ws, r, 1);
   hint.value =
-    '【填写说明】① 无「类别」列；主料/配料/里布等在导入后于系统成本明细中调整。② 损耗列填百分数（如 3 或 3%，也兼容 0.03）。③ 物料单价系统自动匹配。④ 油边/寸、过胶单价、备注为可选列。';
+    '【填写说明】①「类别」列为必填结构列（请勿删除整列）：填写主料、配料、里布等；同一类别下可只在首行填类别，以下行留空表示仍属上一类别，导入后与系统成本明细一致。② 损耗列填百分数（如 3 或 3%，也兼容 0.03）。③ 物料单价系统自动匹配。④ 油边/寸、过胶单价、备注为可选列。';
   hint.font = { size: 8, italic: true, color: { argb: C.hintText }, name: 'Arial' };
   hint.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.hintBg } };
   ws.getRow(r).height = 24;

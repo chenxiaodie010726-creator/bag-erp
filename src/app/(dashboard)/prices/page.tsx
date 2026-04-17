@@ -50,8 +50,34 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50];
  * ============================================================ */
 export default function PricesPage() {
 
-  /* ===== 数据源 ===== */
+  /* ===== 数据源（与供应商等模块一致：持久化到 localStorage） ===== */
   const [prices, setPricesRaw] = useState<PriceItem[]>(ALL_MOCK_PRICES);
+  const [pricesStorageReady, setPricesStorageReady] = useState(false);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.PRICES);
+      if (stored) {
+        const parsed = JSON.parse(stored) as PriceItem[];
+        if (Array.isArray(parsed)) {
+          setPricesRaw(parsed);
+        }
+      }
+    } catch {
+      /* 损坏或不可读时沿用内置模拟数据 */
+    }
+    setPricesStorageReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!pricesStorageReady) return;
+    try {
+      localStorage.setItem(STORAGE_KEYS.PRICES, JSON.stringify(prices));
+    } catch {
+      /* 配额满等 */
+    }
+  }, [prices, pricesStorageReady]);
+
   const undoMgr = useUndoManager<PriceItem[]>();
 
   function setPrices(updater: PriceItem[] | ((prev: PriceItem[]) => PriceItem[])) {
@@ -892,7 +918,7 @@ export default function PricesPage() {
                         </td>
                       ) : null}
 
-                      {showSynonymsColumn && (
+                      {showSynonymsColumn && m.showName && (
                         <td className="px-3 py-3 text-gray-600 align-middle text-xs leading-snug max-w-[180px]" rowSpan={m.span}>
                           {item.synonyms?.trim() ? item.synonyms : <span className="text-gray-300">—</span>}
                         </td>

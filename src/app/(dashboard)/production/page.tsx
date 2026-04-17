@@ -111,7 +111,7 @@ export default function ProductionPage() {
 
     try {
       const XLSX = await import('xlsx');
-      const { parseCostSheetExcel } = await import('@/lib/costSheetImport');
+      const { parseMultiSheetCostSheetExcel } = await import('@/lib/costSheetImport');
 
       const existingSheets = loadCostSheets();
       const newSheets: CostSheet[] = [];
@@ -119,16 +119,12 @@ export default function ProductionPage() {
       for (const file of Array.from(files)) {
         const data = await file.arrayBuffer();
         const wb = XLSX.read(data, { type: 'array' });
-        const mainSheet = wb.Sheets[wb.SheetNames[0]];
-        const mainRows = XLSX.utils.sheet_to_json(mainSheet, { header: 1 }) as (string | number | null)[][];
+        const allSheets = wb.SheetNames.map((name) => ({
+          name: name.replace(/^\uFEFF/, '').trim(),
+          rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' }) as (string | number | null)[][],
+        }));
 
-        let colorRows: (string | number | null)[][] | null = null;
-        if (wb.SheetNames.length >= 2) {
-          const colorSheet = wb.Sheets[wb.SheetNames[1]];
-          colorRows = XLSX.utils.sheet_to_json(colorSheet, { header: 1 }) as (string | number | null)[][];
-        }
-
-        const parsed = parseCostSheetExcel(mainRows, colorRows);
+        const parsed = parseMultiSheetCostSheetExcel(allSheets);
         if (!parsed.pattern_code) {
           // 如果Excel没有款号，用当前选中的款号
           parsed.pattern_code = importingForPattern;

@@ -80,6 +80,10 @@ const ENGLISH_COLOR_TO_ZH: Record<string, string> = {
   plum: '梅紫色',
   mustard: '芥末黄',
   neon: '荧光色',
+  'neon pink': '荧光粉',
+  emerald: '翠绿色',
+  'dark purple': '深紫色',
+  'light purple': '浅紫色',
 };
 
 function normalizeEnglishColorKey(raw: string): string {
@@ -103,6 +107,63 @@ export interface ResolvedSkuChineseColor {
   source: SkuChineseColorSource;
   /** 鼠标悬停说明 */
   hint: string;
+}
+
+/** 是否包含 CJK（有则视为用户刻意填写的中文色名） */
+function hasChineseChars(s: string): boolean {
+  return /[\u4e00-\u9fff]/.test(s);
+}
+
+/**
+ * 成本表「颜色物料对照」：与产品 SKU 一致。
+ * - color_zh 含中文 → 手填展示；
+ * - 仅英文/拉丁（常与英文列重复或导入占位）→ 先按词典英译中，标「自动」，避免整列英文却显示「手填」。
+ */
+export function resolveColorMapChineseColor(colorZh: string, colorEn: string): ResolvedSkuChineseColor {
+  const manual = colorZh?.trim() ?? '';
+  const en = colorEn?.trim() ?? '';
+
+  if (manual && hasChineseChars(manual)) {
+    return {
+      text: manual,
+      source: 'manual',
+      hint: '人工填写',
+    };
+  }
+
+  // 无中文的 color_zh：按英文色名尝试翻译（导入常把英文误写入 A 列）
+  if (manual && !hasChineseChars(manual)) {
+    const fromLatin = translateEnglishColorNameToZh(manual);
+    if (fromLatin) {
+      return {
+        text: fromLatin,
+        source: 'auto_translated',
+        hint: '根据颜色名自动翻译，可填写中文以覆盖',
+      };
+    }
+  }
+
+  if (!en) {
+    return {
+      text: manual || '—',
+      source: 'none',
+      hint: manual ? '未能匹配常用中文色名，请手动填写中文' : '请填写中文或英文颜色',
+    };
+  }
+
+  const fromEn = translateEnglishColorNameToZh(en);
+  if (fromEn) {
+    return {
+      text: fromEn,
+      source: 'auto_translated',
+      hint: '根据英文 Color 自动翻译，可填写左侧中文以覆盖',
+    };
+  }
+  return {
+    text: en,
+    source: 'none',
+    hint: '未能匹配常用中文色名，请手动填写中文',
+  };
 }
 
 export function resolveSkuChineseColor(sku: SkuColorFields): ResolvedSkuChineseColor {

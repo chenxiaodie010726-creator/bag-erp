@@ -407,42 +407,8 @@ export function parseCostSheetExcel(
     }
   }
 
-  // 解析颜色物料对照表
-  let colorMaterialMap: ColorMaterialMapEntry[] = [];
-  if (colorMapRows && colorMapRows.length > 0) {
-    // 第5行(index=4)是列头
-    const headerRow = colorMapRows[4];
-    const headers: string[] = [];
-    if (headerRow) {
-      for (let c = 2; c < headerRow.length; c++) {
-        headers.push(String(headerRow[c] ?? '').trim());
-      }
-    }
-
-    for (let i = 5; i < colorMapRows.length; i++) {
-      const row = colorMapRows[i];
-      if (!row) continue;
-      const colorZh = String(row[0] ?? '').trim();
-      if (!colorZh || colorZh.startsWith('填写') || colorZh.startsWith('•')) break;
-
-      const colorEn = String(row[1] ?? '').trim();
-      const mappings: Record<string, string> = {};
-      for (let c = 0; c < headers.length; c++) {
-        const val = String(row[c + 2] ?? '').trim();
-        if (val && headers[c]) {
-          mappings[headers[c]] = val;
-        }
-      }
-
-      colorMaterialMap.push({
-        id: generateId(),
-        cost_sheet_id: id,
-        color_zh: colorZh,
-        color_en: colorEn,
-        mappings,
-      });
-    }
-  }
+  const colorMaterialMap: ColorMaterialMapEntry[] =
+    colorMapRows && colorMapRows.length > 0 ? parseColorMaterialMapRows(colorMapRows, id) : [];
 
   return {
     id,
@@ -532,54 +498,199 @@ function parseMaterialOnly(sheetRows: Row[], costSheetId: string): CostSheetMate
   return items;
 }
 
-/** 解析颜色物料对照表（新格式，含「成本表引用」列） */
-function parseColorMapWithRef(colorMapRows: Row[], costSheetId: string): ColorMaterialMapEntry[] {
-  const entries: ColorMaterialMapEntry[] = [];
-  const headerRow = colorMapRows[4];
-  if (!headerRow) return entries;
+/** 归一化列头文字：去空白、统一括号，便于匹配 WPS/不同字体下的「颜色(中文)」 */
+function normalizeColorMapHeaderCell(s: string): string {
+  try {
+    return String(s ?? '')
+      .normalize('NFKC')
+      .replace(/\u00A0/g, '')
+      .replace(/[\r\n]+/g, '')
+      .replace(/\s+/g, '')
+      .replace(/（/g, '(')
+      .replace(/）/g, ')');
+  } catch {
+    return String(s ?? '')
+      .replace(/\u00A0/g, '')
+      .replace(/[\r\n]+/g, '')
+      .replace(/\s+/g, '')
+      .replace(/（/g, '(')
+      .replace(/）/g, ')');
+  }
+}
 
-  // 从 C 列开始收集列头（A=颜色中文, B=颜色英文, C+...=物料列和成本表引用列）
-  const headers: string[] = [];
-  for (let c = 2; c < headerRow.length; c++) {
-    headers.push(String(headerRow[c] ?? '').trim());
+/** 定位「颜色(中文)」列头所在行；找不到返回 -1（兼容 A 列为空、表头从 B 列开始） */
+function findColorMaterialMapHeaderRowIndex(rows: Row[]): number {
+  const limit = Math.min(rows.length, 40);
+  for (let i = 0; i < limit; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    for (let col = 0; col < 5; col++) {
+      const cell = String(row[col] ?? '').trim();
+      const na = normalizeColorMapHeaderCell(cell);
+      if (na === '颜色(中文)') return i;
+      if (/颜色\s*[\(（]\s*中文\s*[\)）]/.test(cell)) return i;
+    }
+    const a = String(row[0] ?? '').trim();
+    const b = String(row[1] ?? '').trim();
+    const na = normalizeColorMapHeaderCell(a);
+    if (a.includes('颜色') && a.includes('中文') && (b === '' || /英文|English|Color/i.test(b))) return i;
+    if (na === '颜色' && /Color|英文/i.test(b)) return i;
+  }
+  return -1;
+}
+
+/**
+ * 不依赖 A 列「颜色(中文)」文案：在任一行中若同时出现多种物料列名（主料/配料/里布等），即视为列头行。
+ * 用于 WPS 把表头写成两行、或 A 列被合并导致首格不是「颜色(中文)」等情况。
+ */
+function findColorMapHeaderRowByMaterialKeywords(rows: Row[]): number {
+  const keys = ['主料编号', '配料编号', '面料编号', '里布编号', '车线编号', '五金颜色', '辅料编号', '成本表引用', '备注'];
+  for (let i = 0; i < Math.min(rows.length, 60); i++) {
+    const row = rows[i];
+    if (!row || row.length === 0) continue;
+    const maxC = Math.max(row.length, 16);
+    let hit = 0;
+    let hasMainCode = false;
+    for (let c = 0; c < maxC; c++) {
+      const cell = normalizeColorMapHeaderCell(String(row[c] ?? '').trim());
+      if (keys.some((k) => cell === k || (k.length >= 4 && cell.includes(k)))) hit++;
+      if (cell === '主料编号' || cell === '配料编号' || cell === '里布编号' || cell === '面料编号') hasMainCode = true;
+    }
+    if (hasMainCode) return i;
+    if (hit >= 2) return i;
+  }
+  return -1;
+}
+
+/** 解析表头列：默认 A=中文 B=英文 C 起物料；若 A 空、颜色在 B 或「主料」从 D 列开始则自动偏移 */
+function detectColorMapColumnLayout(headerRow: Row): {
+  colorCol: number;
+  enCol: number;
+  mappingStartCol: number;
+} {
+  const maxC = Math.max(headerRow.length, 16);
+  let colorCol = -1;
+  for (let c = 0; c < maxC; c++) {
+    const cell = String(headerRow[c] ?? '').trim();
+    const n = normalizeColorMapHeaderCell(cell);
+    if (n === '颜色(中文)' || /^颜色[\(（]中文[\)）]$/.test(n) || (cell.includes('颜色') && cell.includes('中文'))) {
+      colorCol = c;
+      break;
+    }
   }
 
-  // 找「成本表引用」列的索引（在 headers 数组中的位置，对应 Excel 列 = c+2）
-  const refColInHeaders = headers.findIndex(
-    (h) => h === '成本表引用' || h === '成本表引用'
-  );
+  let mappingStartCol = -1;
+  const matKeys = ['主料编号', '配料编号', '里布编号', '面料编号', '五金颜色', '车线编号', '成本表引用'];
+  for (let c = 0; c < maxC; c++) {
+    const cell = normalizeColorMapHeaderCell(String(headerRow[c] ?? '').trim());
+    if (matKeys.some((k) => cell === k || cell.endsWith(k))) {
+      mappingStartCol = c;
+      break;
+    }
+  }
 
-  for (let i = 5; i < colorMapRows.length; i++) {
+  if (mappingStartCol < 0) {
+    return { colorCol: 0, enCol: 1, mappingStartCol: 2 };
+  }
+  if (colorCol < 0) {
+    colorCol = Math.max(0, mappingStartCol - 2);
+  }
+  let enCol = colorCol + 1;
+  if (enCol >= mappingStartCol) {
+    enCol = Math.max(0, mappingStartCol - 1);
+  }
+  if (enCol === colorCol) enCol = colorCol + 1;
+  return { colorCol, enCol, mappingStartCol };
+}
+
+function isColorMapFooterOrNoteRow(colorZh: string): boolean {
+  if (!colorZh) return false;
+  if (/^(填写说明|说明|备注|注[:：]|\*)/.test(colorZh)) return true;
+  if (colorZh.startsWith('【说明】') || colorZh.startsWith('•')) return true;
+  return false;
+}
+
+/**
+ * 解析颜色物料对照表 Sheet（与模板一致：A=颜色中文 B=英文 C 起为物料列，可有「成本表引用」）。
+ * 空 A 列行跳过（不中断）；表头前多行、列名「配料/面料」等均可识别。
+ */
+function parseColorMaterialMapRows(colorMapRows: Row[], costSheetId: string): ColorMaterialMapEntry[] {
+  const entries: ColorMaterialMapEntry[] = [];
+  let headerIdx = findColorMaterialMapHeaderRowIndex(colorMapRows);
+  if (headerIdx < 0) headerIdx = findColorMapHeaderRowByMaterialKeywords(colorMapRows);
+  if (headerIdx < 0 && colorMapRows.length > 4) {
+    const a = String(colorMapRows[4]?.[0] ?? '').trim();
+    const na = normalizeColorMapHeaderCell(a);
+    if (na === '颜色(中文)' || /^颜色\s*[\(（]?\s*中文/.test(a)) headerIdx = 4;
+  }
+  if (headerIdx < 0) return entries;
+  const headerRow = colorMapRows[headerIdx];
+  if (!headerRow) return entries;
+
+  const { colorCol, enCol, mappingStartCol } = detectColorMapColumnLayout(headerRow);
+
+  const headers: string[] = [];
+  let width = Math.max(headerRow.length, 14);
+  for (let j = headerIdx; j < Math.min(colorMapRows.length, headerIdx + 80); j++) {
+    const rr = colorMapRows[j];
+    if (rr && rr.length > width) width = rr.length;
+  }
+  width = Math.max(width, mappingStartCol + 12, 14);
+  for (let c = mappingStartCol; c < width; c++) {
+    headers.push(String(headerRow[c] ?? '').trim());
+  }
+  while (headers.length > 0 && headers[headers.length - 1] === '') headers.pop();
+
+  /**
+   * A 列仅存中文（可与产品 SKU「手填/自动」一致：中文空则系统按 B 列英文展示翻译，不把英文写入 color_zh）。
+   * 合并 A 列时续行沿用上一行中文。
+   */
+  let lastColorZh = '';
+
+  for (let i = headerIdx + 1; i < colorMapRows.length; i++) {
     const row = colorMapRows[i];
     if (!row) continue;
-    const colorZh = String(row[0] ?? '').trim();
-    if (!colorZh || colorZh.startsWith('填写') || colorZh.startsWith('•')) break;
 
-    const colorEn = String(row[1] ?? '').trim();
+    const rowTextJoined = row.map((c) => String(c ?? '').trim()).join('');
+    if (!rowTextJoined) continue;
+
+    const rawA = String(row[colorCol] ?? '').trim();
+    const rawEn = String(row[enCol] ?? '').trim();
+    let zh = rawA;
+    if (!zh && lastColorZh) {
+      const hasMat = headers.some((key, hi) => key && String(row[mappingStartCol + hi] ?? '').trim());
+      if (hasMat) zh = lastColorZh;
+    }
+    if (rawA) lastColorZh = rawA;
+    else if (zh) lastColorZh = zh;
+
+    if (!zh && !rawEn) continue;
+    if (rawA && isColorMapFooterOrNoteRow(rawA)) break;
+
     const mappings: Record<string, string> = {};
     let costSheetRef: string | undefined;
 
     for (let c = 0; c < headers.length; c++) {
-      const val = String(row[c + 2] ?? '').trim();
-      if (headers[c] === '成本表引用') {
+      const key = headers[c];
+      if (!key) continue;
+      const val = String(row[mappingStartCol + c] ?? '').trim();
+      if (key === '成本表引用') {
         if (val) costSheetRef = val;
-      } else if (val && headers[c]) {
-        mappings[headers[c]] = val;
+      } else if (val) {
+        mappings[key] = val;
       }
     }
 
     entries.push({
       id: generateId(),
       cost_sheet_id: costSheetId,
-      color_zh: colorZh,
-      color_en: colorEn,
+      color_zh: zh || '',
+      color_en: rawEn,
       mappings,
       ...(costSheetRef ? { cost_sheet_ref: costSheetRef } : {}),
     });
   }
 
-  // 兼容旧格式（无「成本表引用」列）：如果没有找到该列，返回 entries 原样
-  void refColInHeaders;
   return entries;
 }
 
@@ -705,6 +816,15 @@ export function parseProductionRequirements(rows: Row[]): ProductionRequirementI
  *   - 名称为「包装材料」或含「包装」 → 包装材料
  *   - 名称为「生产要求」或含「生产要求」 → 生产要求（两列自由行）
  */
+/** Sheet 标签名归一化（兼容全角/不可见字符，避免「颜色物料对照表」匹配失败） */
+function normalizeWorkbookSheetName(name: string): string {
+  try {
+    return name.replace(/^\uFEFF/g, '').trim().normalize('NFKC');
+  } catch {
+    return name.replace(/^\uFEFF/g, '').trim();
+  }
+}
+
 export function parseMultiSheetCostSheetExcel(
   sheets: { name: string; rows: Row[] }[]
 ): CostSheet {
@@ -715,10 +835,16 @@ export function parseMultiSheetCostSheetExcel(
   let productionReqSheet: { name: string; rows: Row[] } | null = null;
 
   for (const s of sheets) {
-    const n = s.name.trim();
+    const n = normalizeWorkbookSheetName(s.name);
     if (n.startsWith('成本表')) {
       costSheets.push(s);
-    } else if (n === '颜色物料对照表' || (n.includes('颜色') && n.includes('对照'))) {
+    } else if (
+      n === '颜色物料对照表' ||
+      /^颜色[-—\s]*物料/i.test(n) ||
+      (n.includes('颜色') && (n.includes('对照') || n.includes('物料'))) ||
+      /^颜色对照/.test(n) ||
+      n === '颜色'
+    ) {
       colorMapSheet = s;
     } else if (n === '包装材料' || n.includes('包装材料')) {
       packagingSheet = s;
@@ -733,24 +859,62 @@ export function parseMultiSheetCostSheetExcel(
     costSheets[0];
 
   if (!baseSheet) {
-    // 兼容旧格式：直接把第一个 Sheet 当成本表，第二个当颜色对照表
-    const fallbackColorRows = !colorMapSheet && sheets.length >= 2 ? sheets[1].rows : null;
-    return parseCostSheetExcel(
-      sheets[0]?.rows ?? [],
-      fallbackColorRows,
-    );
+    // 无「成本表」前缀的 Sheet 名时：第 1 个当成本、颜色表仍按名称或第 2 标签解析
+    const base = parseCostSheetExcel(sheets[0]?.rows ?? [], null);
+    let colorMap: ColorMaterialMapEntry[] = colorMapSheet
+      ? parseColorMaterialMapRows(colorMapSheet.rows, base.id)
+      : [];
+    if (colorMap.length === 0 && sheets.length >= 2) {
+      const trial = parseColorMaterialMapRows(sheets[1].rows, base.id);
+      if (trial.length > 0) colorMap = trial;
+    }
+    if (colorMap.length === 0) {
+      for (let i = 1; i < sheets.length; i++) {
+        const trial = parseColorMaterialMapRows(sheets[i].rows, base.id);
+        if (trial.length > 0) {
+          colorMap = trial;
+          break;
+        }
+      }
+    }
+    base.color_material_map = colorMap;
+    base.hardware_items = applyHardwarePricesFromColorMap(base.hardware_items ?? [], colorMap);
+    return base;
   }
 
-  // 解析基准成本表
-  const base = parseCostSheetExcel(
-    baseSheet.rows,
-    colorMapSheet ? null : (sheets.find((s) => s !== baseSheet)?.rows ?? null),
-  );
+  // 解析基准成本表（颜色对照勿用「第一个非基准 Sheet」猜测：多成本表时该位置常为「成本表(压花)」等，会导致颜色表从未解析）
+  const base = parseCostSheetExcel(baseSheet.rows, null);
 
-  // 解析颜色对照表（含成本表引用列）
-  if (colorMapSheet) {
-    base.color_material_map = parseColorMapWithRef(colorMapSheet.rows, base.id);
+  // 颜色对照：① 按 Sheet 名称命中 ② 第 2 个标签常为「颜色物料对照表」（名称含不可见字符时名称规则会漏，按位置优先试）③ 再全盘探测
+  let colorMap: ColorMaterialMapEntry[] = colorMapSheet
+    ? parseColorMaterialMapRows(colorMapSheet.rows, base.id)
+    : [];
+
+  if (colorMap.length === 0 && sheets.length >= 2) {
+    const tab2 = sheets[1];
+    const n2 = normalizeWorkbookSheetName(tab2.name);
+    if (!n2.startsWith('成本表')) {
+      const trial = parseColorMaterialMapRows(tab2.rows, base.id);
+      if (trial.length > 0) colorMap = trial;
+    }
   }
+
+  if (colorMap.length === 0) {
+    for (const s of sheets) {
+      if (s === baseSheet) continue;
+      const n = normalizeWorkbookSheetName(s.name);
+      if (n.startsWith('成本表')) continue;
+      if (packagingSheet && s === packagingSheet) continue;
+      if (productionReqSheet && s === productionReqSheet) continue;
+      const trial = parseColorMaterialMapRows(s.rows, base.id);
+      if (trial.length > 0) {
+        colorMap = trial;
+        break;
+      }
+    }
+  }
+  base.color_material_map = colorMap;
+  base.hardware_items = applyHardwarePricesFromColorMap(base.hardware_items ?? [], colorMap);
 
   // 解析「做法不同」变体成本表
   const variantFull: Record<string, CostSheetMaterialItem[]> = {};

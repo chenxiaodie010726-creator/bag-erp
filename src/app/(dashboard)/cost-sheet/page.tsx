@@ -73,8 +73,8 @@ export default function CostSheetListPage() {
 
         // 将所有 Sheet 转为 { name, rows } 数组，交由 parseMultiSheetCostSheetExcel 统一识别
         const allSheets = wb.SheetNames.map((name) => ({
-          name,
-          rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1 }) as (string | number | null)[][],
+          name: name.replace(/^\uFEFF/, '').trim(),
+          rows: XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' }) as (string | number | null)[][],
         }));
 
         const parsed = parseMultiSheetCostSheetExcel(allSheets);

@@ -9,6 +9,8 @@ export const STORAGE_KEYS = {
   UNREGISTERED_DISMISSED_IDS: 'cf_erp_unregistered_dismissed_ids',
   PACKING_LISTS: 'cf_erp_packing_lists',
   SUPPLIERS: 'cf_erp_suppliers',
+  /** 供应商管理 → 价格管理（物料/工艺价格表） */
+  PRICES: 'cf_erp_prices',
   /** 物料供应商 — 自定义分类列表（localStorage JSON 数组） */
   SUPPLIER_CATEGORIES_MATERIAL: 'cf_erp_supplier_categories_material',
   /** 工艺供应商 — 自定义分类列表 */
