@@ -84,6 +84,13 @@ const NAV_GROUPS: ParentNavGroup[] = [
     ],
   },
   {
+    label: '回收站',
+    icon: '🗑️',
+    children: [
+      { label: '回收站', href: '/recycle-bin' },
+    ],
+  },
+  {
     label: '系统设置',
     icon: '⚙️',
     children: [

@@ -12,7 +12,6 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useUndoManager, useUndoKeyboard } from '@/hooks/useUndoManager';
 import UndoToast from '@/components/UndoToast';
 import {
-  MOCK_SUPPLIERS,
   SUPPLIER_CATEGORIES_MATERIAL,
   SUPPLIER_CATEGORIES_PROCESS,
   CATEGORY_COLORS,
@@ -24,43 +23,55 @@ import type {
   SupplierStatus,
 } from './_components/mockData';
 import { STORAGE_KEYS } from '@/lib/storageKeys';
+import { useSuppliers, type SupplierRow } from '@/hooks/api/useSuppliers';
 import ImportSupplierModal from './_components/ImportSupplierModal';
 import { downloadSupplierTemplate } from './_components/ImportSupplierModal';
 import SupplierFormModal from './_components/SupplierFormModal';
 
-const PAGE_SIZE_OPTIONS = [10, 20, 50];
-
-function saveToStorage(data: SupplierItem[]) {
-  try {
-    localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(data));
-  } catch { /* quota — silent */ }
+/* ===== SupplierRow (API/DB) ↔ SupplierItem (前端) 映射 ===== */
+function rowToItem(r: SupplierRow): SupplierItem {
+  return {
+    id: r.id,
+    name: r.name,
+    fullName: r.full_name ?? '',
+    type: (r.type ?? '物料供应商') as SupplierType,
+    category: (r.category ?? '其他') as SupplierCategory,
+    paymentTerm: r.payment_term ?? '30 天',
+    wechatBound: !!r.wechat_id,
+    wechatId: r.wechat_id ?? '',
+    contactGroup: r.contact_group ?? '',
+    groupMembers: r.group_members ?? 0,
+    hasLicense: r.has_license ?? false,
+    status: (r.status ?? '启用') as SupplierStatus,
+    createdAt: r.created_at,
+  };
 }
+
+function itemToRow(item: SupplierItem): Partial<SupplierRow> {
+  return {
+    name: item.name,
+    full_name: item.fullName,
+    type: item.type,
+    category: item.category,
+    payment_term: item.paymentTerm,
+    wechat_id: item.wechatId || null,
+    contact_group: item.contactGroup,
+    group_members: item.groupMembers,
+    has_license: item.hasLicense,
+    status: item.status,
+  };
+}
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
 /* ============================================================
  * 主页面
  * ============================================================ */
 export default function SuppliersPage() {
 
-  /* ===== 数据源 ===== */
-  const [suppliers, setSuppliersRaw] = useState<SupplierItem[]>(MOCK_SUPPLIERS);
-
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEYS.SUPPLIERS);
-      if (stored) {
-        const parsed = JSON.parse(stored) as SupplierItem[];
-        if (Array.isArray(parsed) && parsed.length > 0) setSuppliersRaw(parsed);
-      }
-    } catch { /* fallback to mock */ }
-  }, []);
-
-  const setSuppliers = useCallback((updater: SupplierItem[] | ((prev: SupplierItem[]) => SupplierItem[])) => {
-    setSuppliersRaw((prev) => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      saveToStorage(next);
-      return next;
-    });
-  }, []);
+  /* ===== 数据源（从 API 加载） ===== */
+  const api = useSuppliers();
+  const suppliers = useMemo(() => api.suppliers.map(rowToItem), [api.suppliers]);
 
   const undoMgr = useUndoManager<SupplierItem[]>();
 
@@ -71,8 +82,8 @@ export default function SuppliersPage() {
   const handleUndo = useCallback(() => {
     const entry = undoMgr.pop();
     if (entry) {
-      setSuppliersRaw(entry.snapshot);
-      saveToStorage(entry.snapshot);
+      // undo 暂不支持 API 回滚，仅提示
+      alert('撤销功能暂不支持，请使用回收站恢复已删除数据。');
     }
   }, [undoMgr]);
 
@@ -196,21 +207,9 @@ export default function SuppliersPage() {
     setPage(1);
   }
 
-  /* ===== 刷新（重新从 localStorage 读取） ===== */
+  /* ===== 刷新（重新从 API 加载） ===== */
   function handleRefresh() {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEYS.SUPPLIERS);
-      if (stored) {
-        const parsed = JSON.parse(stored) as SupplierItem[];
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setSuppliersRaw(parsed);
-          return;
-        }
-      }
-      setSuppliersRaw(MOCK_SUPPLIERS);
-    } catch {
-      setSuppliersRaw(MOCK_SUPPLIERS);
-    }
+    api.refresh();
   }
 
   /* ===== 全选/取消 ===== */
@@ -238,23 +237,26 @@ export default function SuppliersPage() {
   }
 
   /* ===== 切换供应商状态 ===== */
-  function toggleStatus(id: string) {
-    const target = suppliers.find((s) => s.id === id);
-    pushUndo(`切换供应商状态: ${target?.name ?? id}`);
-    setSuppliers((prev) =>
-      prev.map((s) =>
-        s.id === id ? { ...s, status: (s.status === '启用' ? '停用' : '启用') as SupplierStatus } : s,
-      ),
-    );
-  }
-
-  /* ===== 删除供应商 ===== */
-  function handleDelete(id: string) {
+  async function toggleStatus(id: string) {
     const target = suppliers.find((s) => s.id === id);
     if (!target) return;
-    if (!confirm(`确认删除供应商「${target.name}」？删除后可撤回恢复。`)) return;
-    pushUndo(`删除供应商: ${target.name}`);
-    setSuppliers((prev) => prev.filter((s) => s.id !== id));
+    try {
+      await api.update(id, { status: target.status === '启用' ? '停用' : '启用' });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '切换状态失败');
+    }
+  }
+
+  /* ===== 删除供应商（软删除 → 回收站） ===== */
+  async function handleDelete(id: string) {
+    const target = suppliers.find((s) => s.id === id);
+    if (!target) return;
+    if (!confirm(`确认删除供应商「${target.name}」？删除后可在回收站恢复。`)) return;
+    try {
+      await api.remove(id);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '删除失败');
+    }
     setSelectedIds((prev) => {
       const next = new Set(prev);
       next.delete(id);
@@ -264,47 +266,63 @@ export default function SuppliersPage() {
   }
 
   /* ===== 批量删除 ===== */
-  function handleBatchDelete() {
+  async function handleBatchDelete() {
     if (selectedIds.size === 0) return;
-    if (!confirm(`确认删除选中的 ${selectedIds.size} 个供应商？删除后可撤回恢复。`)) return;
-    pushUndo(`批量删除 ${selectedIds.size} 个供应商`);
-    setSuppliers((prev) => prev.filter((s) => !selectedIds.has(s.id)));
+    if (!confirm(`确认删除选中的 ${selectedIds.size} 个供应商？删除后可在回收站恢复。`)) return;
+    try {
+      for (const id of selectedIds) {
+        await api.remove(id);
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '批量删除失败');
+    }
     setSelectedIds(new Set());
   }
 
   /* ===== 导入回调 ===== */
-  function handleImportConfirm(data: SupplierItem[]) {
-    pushUndo(`导入 ${data.length} 个供应商`);
-    setSuppliers((prev) => [...data, ...prev]);
+  async function handleImportConfirm(data: SupplierItem[]) {
+    try {
+      for (const item of data) {
+        await api.create(itemToRow(item));
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '导入失败');
+    }
     setPage(1);
   }
 
   /* ===== 新建回调 ===== */
-  function handleCreateConfirm(newSupplier: SupplierItem) {
-    pushUndo(`新建供应商: ${newSupplier.name}`);
-    setSuppliers((prev) => [newSupplier, ...prev]);
+  async function handleCreateConfirm(newSupplier: SupplierItem) {
+    try {
+      await api.create(itemToRow(newSupplier));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '创建失败');
+    }
     setCreateOpen(false);
     setPage(1);
   }
 
   /* ===== 编辑回调 ===== */
-  function handleEditConfirm(updated: SupplierItem) {
-    pushUndo(`编辑供应商: ${updated.name}`);
-    setSuppliers((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+  async function handleEditConfirm(updated: SupplierItem) {
+    try {
+      await api.update(updated.id, itemToRow(updated));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '编辑失败');
+    }
     setEditTarget(null);
   }
 
   /* ===== 微信绑定回调 ===== */
-  function handleWechatBind(id: string, wechatId: string, contactGroup: string, groupMembers: number) {
-    const target = suppliers.find((s) => s.id === id);
-    pushUndo(`${wechatId ? '绑定' : '解除绑定'}微信: ${target?.name ?? id}`);
-    setSuppliers((prev) =>
-      prev.map((s) =>
-        s.id === id
-          ? { ...s, wechatBound: !!wechatId, wechatId, contactGroup, groupMembers }
-          : s,
-      ),
-    );
+  async function handleWechatBind(id: string, wechatId: string, contactGroup: string, groupMembers: number) {
+    try {
+      await api.update(id, {
+        wechat_id: wechatId || null,
+        contact_group: contactGroup,
+        group_members: groupMembers,
+      });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : '绑定失败');
+    }
     setWechatBindTarget(null);
   }
 
