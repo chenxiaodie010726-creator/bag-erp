@@ -11,6 +11,7 @@ const TABLE_LABELS: Record<string, string> = {
   customer_orders: '客户订单',
   work_orders: '生产单',
   customers: '客户',
+  colors: '颜色',
 };
 
 const ALL_TABLES = Object.keys(TABLE_LABELS);

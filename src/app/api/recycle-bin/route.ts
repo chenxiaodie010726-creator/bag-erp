@@ -7,6 +7,7 @@ const RECYCLABLE_TABLES = [
   { table: 'skus', label: 'SKU', nameField: 'sku_code' },
   { table: 'customer_orders', label: '客户订单', nameField: 'po_number' },
   { table: 'work_orders', label: '生产订单', nameField: 'work_order_number' },
+  { table: 'colors', label: '颜色', nameField: 'keywords' },
 ] as const;
 
 export interface RecycleBinItem {
@@ -17,30 +18,38 @@ export interface RecycleBinItem {
   deleted_at: string;
 }
 
-/** GET /api/recycle-bin — 获取所有已删除项 */
+/** GET /api/recycle-bin — 获取所有已删除项（并行查询所有表） */
 export async function GET() {
   const supabase = createServerSupabase();
+
+  // 并行查询所有表，快 ≈6 倍
+  const results = await Promise.all(
+    RECYCLABLE_TABLES.map(({ table, label, nameField }) =>
+      supabase
+        .from(table)
+        .select(`id, ${nameField}, deleted_at`)
+        .not('deleted_at', 'is', null)
+        .order('deleted_at', { ascending: false })
+        .then(({ data, error }) => ({ table, label, nameField, data, error }))
+    )
+  );
+
   const allItems: RecycleBinItem[] = [];
-
-  for (const { table, label, nameField } of RECYCLABLE_TABLES) {
-    const { data, error } = await supabase
-      .from(table)
-      .select(`id, ${nameField}, deleted_at`)
-      .not('deleted_at', 'is', null)
-      .order('deleted_at', { ascending: false });
-
-    if (error) continue; // 表不存在或查询失败时跳过
-
-    if (data) {
-      for (const row of data) {
-        allItems.push({
-          id: row.id,
-          table,
-          label,
-          name: (row as Record<string, string>)[nameField] ?? row.id,
-          deleted_at: row.deleted_at,
-        });
-      }
+  for (const { table, label, nameField, data, error } of results) {
+    if (error || !data) continue; // 表不存在或查询失败时跳过
+    for (const row of data) {
+      const raw = (row as Record<string, unknown>)[nameField];
+      // 数组字段（如 colors.keywords）拼成 "BLACK, 黑色"
+      const displayName = Array.isArray(raw)
+        ? raw.filter((x) => typeof x === 'string' && x.trim()).join(', ')
+        : (typeof raw === 'string' && raw) || row.id;
+      allItems.push({
+        id: row.id,
+        table,
+        label,
+        name: displayName,
+        deleted_at: row.deleted_at,
+      });
     }
   }
 

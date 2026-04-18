@@ -10,10 +10,9 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import type { ProductListItem } from './mockData';
 import { COLOR_MAP, COLOR_NAME_MAP, COLOR_NAME_ZH_MAP } from './mockData';
+import { useColorRegistry } from '@/hooks/useColorRegistry';
 import {
-  loadColorRegistry,
   normalizeHexInput,
-  COLOR_REGISTRY_CHANGED_EVENT,
   COLOR_REGISTRY_COMMON_PRESET_LIMIT,
   derivePresetColorCode,
   derivePresetColorNameZh,
@@ -58,27 +57,19 @@ function isHexLight(hex: string): boolean {
 }
 
 export default function AddSkuModal({ open, product, onClose, onConfirm }: AddSkuModalProps) {
+  const colorRegistry = useColorRegistry();
+
   /* 颜色：colorCode 是存储的代码（BLK / #ff5500 / 客户编号）；pickerHex 是 input[type=color] 的值 */
   const [colorCode, setColorCode] = useState('BLK');
   const [pickerHex, setPickerHex] = useState(COLOR_MAP['BLK']);
   const [colorNameZh, setColorNameZh] = useState(COLOR_NAME_ZH_MAP['BLK']);
   /** 最近一次从「常用颜色」点选的注册表条目，用于高亮（与手输 code 区分） */
   const [selectedRegistryId, setSelectedRegistryId] = useState<string | null>(null);
-  const [registryVersion, setRegistryVersion] = useState(0);
   const colorInputRef = useRef<HTMLInputElement>(null);
 
   const commonPresets = useMemo((): ColorRegistryEntry[] => {
-    if (typeof window === 'undefined') return [];
-    return getRegistryEntriesForCommonPresets(loadColorRegistry(), COLOR_REGISTRY_COMMON_PRESET_LIMIT);
-  }, [registryVersion]);
-
-  useEffect(() => {
-    function bump() {
-      setRegistryVersion((v) => v + 1);
-    }
-    window.addEventListener(COLOR_REGISTRY_CHANGED_EVENT, bump);
-    return () => window.removeEventListener(COLOR_REGISTRY_CHANGED_EVENT, bump);
-  }, []);
+    return getRegistryEntriesForCommonPresets(colorRegistry, COLOR_REGISTRY_COMMON_PRESET_LIMIT);
+  }, [colorRegistry]);
 
   const [skuCode, setSkuCode] = useState('');
   const [stock, setStock] = useState('0');
@@ -97,7 +88,6 @@ export default function AddSkuModal({ open, product, onClose, onConfirm }: AddSk
       setBulkPrice(String(product.bulkPrice));
       setDropshipPrice(String(product.dropshipPrice));
       setStatus('active');
-      setRegistryVersion((v) => v + 1);
     }
   }, [open, product]);
 

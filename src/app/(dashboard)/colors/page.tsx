@@ -8,15 +8,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import Link from 'next/link';
 import {
-  loadColorRegistry,
+  DEFAULT_SEED,
   normalizeColorKeyword,
   normalizeHexInput,
   parseKeywordLine,
-  saveColorRegistry,
   keywordsToInputLine,
   COLOR_REGISTRY_COMMON_PRESET_LIMIT,
   type ColorRegistryEntry,
 } from '@/lib/colorRegistry';
+import { useColors } from '@/hooks/api/useColors';
 import { useUndoManager, useUndoKeyboard } from '@/hooks/useUndoManager';
 import UndoToast from '@/components/UndoToast';
 
@@ -60,30 +60,53 @@ function ColorKeywordTextarea({
 }
 
 export default function ColorsPage() {
-  const [entries, setEntries] = useState<ColorRegistryEntry[]>(() => loadColorRegistry());
+  const { entries: serverEntries, loading, error, replaceAll, refresh } = useColors();
+  const [draft, setDraft] = useState<ColorRegistryEntry[]>([]);
+  const [dirty, setDirty] = useState(false);
   /** 顶部「编辑」开启后整表可改；删除仅在此模式下可用 */
   const [batchEdit, setBatchEdit] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkText, setBulkText] = useState('');
 
   const undoMgr = useUndoManager<ColorRegistryEntry[]>();
 
+  useEffect(() => {
+    if (loading) return;
+    if (!dirty) {
+      setDraft(serverEntries.map((e) => ({ ...e, keywords: [...e.keywords] })));
+    }
+  }, [loading, serverEntries, dirty]);
+
   const persist = useCallback((next: ColorRegistryEntry[], undoDesc?: string) => {
     if (undoDesc) {
-      undoMgr.push(entries, undoDesc);
+      undoMgr.push(draft, undoDesc);
     }
-    setEntries(next);
-    saveColorRegistry(next);
-    setSavedFlash(true);
-    window.setTimeout(() => setSavedFlash(false), 1200);
-  }, [entries, undoMgr]);
+    setDraft(next);
+    setDirty(true);
+  }, [draft, undoMgr]);
+
+  const handleSave = useCallback(async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await replaceAll(draft);
+      setDirty(false);
+      setSavedFlash(true);
+      window.setTimeout(() => setSavedFlash(false), 1200);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  }, [draft, replaceAll, saving]);
 
   const handleUndo = useCallback(() => {
     const entry = undoMgr.pop();
     if (entry) {
-      setEntries(entry.snapshot);
-      saveColorRegistry(entry.snapshot);
+      setDraft(entry.snapshot.map((e) => ({ ...e, keywords: [...e.keywords] })));
+      setDirty(true);
     }
   }, [undoMgr]);
 
@@ -127,7 +150,7 @@ export default function ColorsPage() {
     const from = dragIdx.current;
     const to = dragOverIdx.current;
     if (from !== null && to !== null && from !== to && batchEdit) {
-      const next = [...entries];
+      const next = [...draft];
       const [moved] = next.splice(from, 1);
       next.splice(to, 0, moved!);
       persist(next, '调整颜色顺序');
@@ -141,8 +164,8 @@ export default function ColorsPage() {
   function moveRowByIndex(idx: number, delta: -1 | 1) {
     if (!batchEdit) return;
     const next = idx + delta;
-    if (next < 0 || next >= entries.length) return;
-    const copy = [...entries];
+    if (next < 0 || next >= draft.length) return;
+    const copy = [...draft];
     const a = copy[idx]!;
     const b = copy[next]!;
     copy[idx] = b;
@@ -152,12 +175,12 @@ export default function ColorsPage() {
 
   function addRow() {
     const id = newId();
-    persist([...entries, { id, keywords: [], hex: PLACEHOLDER_HEX }], '添加颜色映射');
+    persist([...draft, { id, keywords: [], hex: PLACEHOLDER_HEX }], '添加颜色映射');
     setBatchEdit(true);
   }
 
   function updateRow(id: string, patch: Partial<Pick<ColorRegistryEntry, 'keywords' | 'hex'>>) {
-    persist(entries.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+    persist(draft.map((e) => (e.id === id ? { ...e, ...patch } : e)));
   }
 
   function updateKeywordsFromLine(id: string, line: string) {
@@ -168,22 +191,21 @@ export default function ColorsPage() {
   function removeRow(id: string) {
     if (!batchEdit) return;
     if (!window.confirm('确定删除该条颜色映射？删除后可撤回恢复。')) return;
-    const target = entries.find((e) => e.id === id);
-    persist(entries.filter((e) => e.id !== id), `删除颜色: ${target?.keywords[0] ?? id}`);
+    const target = draft.find((e) => e.id === id);
+    persist(draft.filter((e) => e.id !== id), `删除颜色: ${target?.keywords[0] ?? id}`);
   }
 
   function resetDefaults() {
-    if (!window.confirm('恢复为系统默认的一条示例（BLACK + 黑色）？已自定义的条目将被覆盖。重置后可撤回恢复。')) return;
-    undoMgr.push(entries, '恢复默认颜色映射');
-    try {
-      localStorage.removeItem('cf_erp_color_registry');
-    } catch {
-      /* ignore */
+    if (
+      !window.confirm(
+        '恢复为系统默认的两条示例（BLACK / 黑色 与 GREEN / 绿色）？当前列表将被替换为示例内容；点「保存到服务器」后才会写入数据库。重置后可撤回恢复。',
+      )
+    ) {
+      return;
     }
-    const fresh = loadColorRegistry();
-    setEntries(fresh);
-    setSavedFlash(true);
-    window.setTimeout(() => setSavedFlash(false), 1200);
+    undoMgr.push(draft, '恢复默认颜色映射');
+    setDraft(DEFAULT_SEED.map((e) => ({ ...e, keywords: [...e.keywords] })));
+    setDirty(true);
   }
 
   function applyBulkImport() {
@@ -194,7 +216,7 @@ export default function ColorsPage() {
     }
 
     const used = new Set<string>();
-    for (const e of entries) {
+    for (const e of draft) {
       for (const k of e.keywords) {
         used.add(normalizeColorKeyword(k));
       }
@@ -225,7 +247,7 @@ export default function ColorsPage() {
       return;
     }
 
-    persist([...entries, ...newRows], `批量导入 ${newRows.length} 条颜色`);
+    persist([...draft, ...newRows], `批量导入 ${newRows.length} 条颜色`);
     setBulkText('');
     setBulkOpen(false);
     setBatchEdit(true);
@@ -241,6 +263,11 @@ export default function ColorsPage() {
 
   return (
     <div className="w-full max-w-7xl mx-auto flex flex-col gap-4">
+      {loading && (
+        <p className="text-sm text-gray-500" role="status">
+          正在从服务器加载颜色…
+        </p>
+      )}
       {/*
         仅顶栏（面包屑 + 操作按钮）sticky。批量导入放在下方随页面滚动，避免整块过高且干扰表头 top 计算。
         表头：border-separate + 每个 th 单独 sticky（collapse+thead sticky 在 Chrome 下易与首行重叠）。
@@ -262,9 +289,37 @@ export default function ColorsPage() {
               <h1 className="text-xl font-bold text-gray-800 leading-tight">颜色管理</h1>
             </div>
             <div className="flex flex-wrap items-center gap-2 justify-end shrink-0">
-              {savedFlash && (
-                <span className="text-xs text-green-600 animate-pulse">已保存</span>
+              {error && (
+                <span className="text-xs text-red-600 max-w-[14rem] truncate" title={error}>
+                  {error}
+                </span>
               )}
+              {error && (
+                <button
+                  type="button"
+                  onClick={() => void refresh()}
+                  className="text-xs px-2 py-1 border border-red-200 rounded text-red-700 hover:bg-red-50"
+                >
+                  重试
+                </button>
+              )}
+              {dirty && <span className="text-xs text-amber-600">未保存</span>}
+              {savedFlash && (
+                <span className="text-xs text-green-600 animate-pulse">已保存到服务器</span>
+              )}
+              <button
+                type="button"
+                disabled={!dirty || saving || loading}
+                onClick={() => void handleSave()}
+                className={[
+                  'text-sm px-4 py-2 rounded-md font-medium',
+                  !dirty || saving || loading
+                    ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                    : 'bg-emerald-600 text-white hover:bg-emerald-700',
+                ].join(' ')}
+              >
+                {saving ? '保存中…' : '保存到服务器'}
+              </button>
               {batchEdit ? (
                 <button
                   type="button"
@@ -386,14 +441,14 @@ export default function ColorsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {entries.length === 0 ? (
+            {draft.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-4 py-12 text-center text-gray-400 text-sm">
                   暂无映射，请「批量导入」或「添加映射」
                 </td>
               </tr>
             ) : (
-              entries.map((row, rowIndex) => {
+              draft.map((row, rowIndex) => {
                 const previewBg = normalizeHexInput(row.hex) ?? '#e5e7eb';
                 const keywordLine = keywordsToInputLine(row.keywords);
                 return (
@@ -447,11 +502,11 @@ export default function ColorsPage() {
                               </button>
                               <button
                                 type="button"
-                                disabled={rowIndex >= entries.length - 1}
+                                disabled={rowIndex >= draft.length - 1}
                                 onClick={() => moveRowByIndex(rowIndex, 1)}
                                 className={[
                                   'p-0.5 rounded transition-colors',
-                                  rowIndex >= entries.length - 1
+                                  rowIndex >= draft.length - 1
                                     ? 'text-gray-200 cursor-not-allowed'
                                     : 'text-gray-400 hover:text-gray-600 hover:bg-gray-200',
                                 ].join(' ')}
@@ -567,11 +622,11 @@ export default function ColorsPage() {
             </p>
             {batchEdit ? (
               <p className="text-amber-900/90 bg-amber-50/80 border border-amber-100 rounded-md px-2.5 py-2">
-                正在批量编辑：可直接修改表格；删除仅在编辑模式下可用，点顶部固定栏「完成」退出。
+                正在批量编辑：可直接修改表格；删除仅在编辑模式下可用，点顶部固定栏「完成」退出。修改后请点「保存到服务器」同步到数据库。
               </p>
             ) : (
               <p className="text-gray-500">
-                点顶部固定栏「编辑」后可修改颜色与关键词、调整顺序；删除需先进入编辑模式。
+                点顶部固定栏「编辑」后可修改颜色与关键词、调整顺序；删除需先进入编辑模式。编辑完成后点「保存到服务器」写入数据库（删除会进入回收站）。
               </p>
             )}
           </div>

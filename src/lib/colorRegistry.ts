@@ -1,11 +1,12 @@
 /* ============================================================
- * 颜色管理 — 多词根（同义词）→ 色值（localStorage）
+ * 颜色管理 — 多词根（同义词）→ 色值（数据库存储，经 /api/colors）
  * 用于订单「颜色」列与 SKU 展示：按关键词匹配后覆盖默认灰块
  * ============================================================ */
 
+/** @deprecated 仅保留常量名，数据源已迁至 API */
 export const COLOR_REGISTRY_STORAGE_KEY = 'cf_erp_color_registry';
 
-/** 与 useColorRegistry 同步同页更新 */
+/** @deprecated 同页同步已改为 useColors 共享状态 + API；勿再依赖此事件 */
 export const COLOR_REGISTRY_CHANGED_EVENT = 'cf-erp-color-registry-changed';
 
 export interface ColorRegistryEntry {
@@ -51,7 +52,8 @@ export function getRegistryEntriesForCommonPresets(
   return registry.slice(0, limit);
 }
 
-const DEFAULT_SEED: ColorRegistryEntry[] = [
+/** 完全空库时首次种子（见 useColors）；含占位 id，写入 API 时服务端可分配新 id */
+export const DEFAULT_SEED: ColorRegistryEntry[] = [
   { id: 'seed-black', keywords: ['BLACK', '黑色'], hex: '#1a1a1a' },
   { id: 'seed-green', keywords: ['GREEN', '绿色'], hex: '#16a34a' },
 ];
@@ -78,63 +80,18 @@ export function normalizeColorKeyword(s: string): string {
     .trim();
 }
 
-function migrateRawEntry(raw: unknown): ColorRegistryEntry | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const o = raw as Record<string, unknown>;
-  if (typeof o.id !== 'string' || typeof o.hex !== 'string') return null;
-
-  if (Array.isArray(o.keywords)) {
-    const kws = o.keywords.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim());
-    if (kws.length === 0) return null;
-    return { id: o.id, keywords: kws, hex: o.hex };
-  }
-
-  /* 旧版单字段 keyword */
-  if (typeof o.keyword === 'string' && o.keyword.trim()) {
-    return { id: o.id, keywords: [o.keyword.trim()], hex: o.hex };
-  }
-
-  return null;
-}
-
-/** 首次无数据时写入默认条目，便于开箱即用 */
+/** @deprecated 颜色数据已迁至 /api/colors，请使用 useColors().refresh() */
 export function loadColorRegistry(): ColorRegistryEntry[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(COLOR_REGISTRY_STORAGE_KEY);
-    if (raw === null) {
-      saveColorRegistry(DEFAULT_SEED);
-      return DEFAULT_SEED.map((e) => ({ ...e, keywords: [...e.keywords] }));
-    }
-    const parsed = JSON.parse(raw) as unknown[];
-    if (!Array.isArray(parsed)) {
-      saveColorRegistry(DEFAULT_SEED);
-      return DEFAULT_SEED.map((e) => ({ ...e, keywords: [...e.keywords] }));
-    }
-    const migrated = parsed.map(migrateRawEntry).filter((e): e is ColorRegistryEntry => e !== null);
-    if (migrated.length === 0) {
-      saveColorRegistry(DEFAULT_SEED);
-      return DEFAULT_SEED.map((e) => ({ ...e, keywords: [...e.keywords] }));
-    }
-    const hadLegacyShape = parsed.some(
-      (item): item is Record<string, unknown> =>
-        !!item && typeof item === 'object' && 'keyword' in item && !Array.isArray((item as Record<string, unknown>).keywords),
-    );
-    if (hadLegacyShape) saveColorRegistry(migrated);
-    return migrated;
-  } catch {
-    saveColorRegistry(DEFAULT_SEED);
-    return DEFAULT_SEED.map((e) => ({ ...e, keywords: [...e.keywords] }));
+  if (typeof process !== 'undefined' && process.env.NODE_ENV === 'development') {
+    console.warn('[colorRegistry] loadColorRegistry() 已废弃：请改用 useColors / useColorRegistry（API）。');
   }
+  return [];
 }
 
-export function saveColorRegistry(entries: ColorRegistryEntry[]): void {
-  if (typeof window === 'undefined') return;
-  try {
-    localStorage.setItem(COLOR_REGISTRY_STORAGE_KEY, JSON.stringify(entries));
-    window.dispatchEvent(new Event(COLOR_REGISTRY_CHANGED_EVENT));
-  } catch {
-    /* quota */
+/** @deprecated 颜色数据已迁至 /api/colors，请使用 useColors().replaceAll() */
+export function saveColorRegistry(_entries: ColorRegistryEntry[]): void {
+  if (typeof process !== 'undefined' && process.env.NODE_ENV === 'development') {
+    console.warn('[colorRegistry] saveColorRegistry() 已废弃：请改用 useColors().replaceAll()。');
   }
 }
 
