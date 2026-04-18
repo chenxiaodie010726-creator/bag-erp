@@ -38,43 +38,7 @@ export interface SetItem {
  * 包含 RALLY-01 + 配件（概念组合），有绿色和黑色两个 SKU
  * 套装 SKU 将被 skuLookup 识别为「已注册」
  * ============================================================ */
-export const MOCK_SETS: SetItem[] = [
-  {
-    id: 's-test-001',
-    sku: 'TEST-SET-RALLY',
-    name: 'RALLY 出行套装',
-    imageUrl: null,
-    components: ['RALLY-01'],
-    colors: ['GRN', 'BLK'],
-    skus: [
-      {
-        id: 's-test-001-sku-0',
-        skuCode: 'TEST-SET-RALLY-GRN',
-        colorCode: 'GRN',
-        colorNameZh: '绿色',
-        stock: 20,
-        status: 'active',
-        updatedAt: '2026/04/01',
-      },
-      {
-        id: 's-test-001-sku-1',
-        skuCode: 'TEST-SET-RALLY-BLK',
-        colorCode: 'BLK',
-        colorNameZh: '黑色',
-        stock: 15,
-        status: 'active',
-        updatedAt: '2026/04/01',
-      },
-    ],
-    bulkPrice: 20.00,
-    dropshipPrice: 24.40,
-    currency: 'USD',
-    packWeight: '0.85 kg',
-    packSize: '35×25×12 cm',
-    status: 'active',
-    createdAt: '2026/04/01',
-  },
-];
+export const MOCK_SETS: SetItem[] = [];
 
 export const SET_STATUS_OPTIONS = ['全部状态', '启用', '停用'] as const;
 

@@ -64,6 +64,9 @@ export const PAGE_PERMISSIONS: Record<string, Record<Role, PermissionLevel>> = {
   // ===== 报表分析 =====
   '/reports':                         { super_admin: 'full', admin: 'full', clerk: 'read', production: 'none', packaging: 'none' },
 
+  // ===== 回收站 =====
+  '/recycle-bin':                       { super_admin: 'full', admin: 'full', clerk: 'none', production: 'none', packaging: 'none' },
+
   // ===== 系统设置 =====
   '/settings':                        { super_admin: 'full', admin: 'none', clerk: 'none', production: 'none', packaging: 'none' },
   '/settings/accounts':               { super_admin: 'full', admin: 'none', clerk: 'none', production: 'none', packaging: 'none' },

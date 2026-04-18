@@ -31,38 +31,9 @@ export interface OrderDetailData {
  *   TEST-HILO-BLK  (BLACK)  — 未注册，160 pcs
  * 总量 240 件，总额 $3,120
  * ============================================================ */
-const PO_TEST001: OrderDetailData = {
-  shipmentDates: ['4/15/26'],
-  items: [
-    {
-      id: 'td01',
-      sku: 'TEST-RALLY-GRN',
-      colorName: 'GREEN',
-      styleName: 'RALLY SHOULDER BAG',
-      unitPrice: 13.00,
-      quantity: 80,
-      shipments: [{ date: '4/15/26', qty: 80 }],
-      remarks: '0.5',
-    },
-    {
-      id: 'td02',
-      sku: 'TEST-HILO-BLK',
-      colorName: 'BLACK',
-      styleName: 'HILO HOBO',
-      unitPrice: 13.00,
-      quantity: 160,
-      shipments: [{ date: '4/15/26', qty: 160 }],
-      remarks: '0.55',
-    },
-  ],
-};
-
 /* ============================================================
  * 公开的查询函数
  * ============================================================ */
-const HARDCODED_MAP: Record<string, OrderDetailData> = {
-  order_test_0: PO_TEST001,
-};
 
 export function generateOrderDetail(
   _orderId: string,
@@ -79,5 +50,5 @@ export function getOrderDetail(
   totalAmount: number,
   totalQty: number,
 ): OrderDetailData {
-  return HARDCODED_MAP[orderId] ?? generateOrderDetail(orderId, batches, totalAmount, totalQty);
+  return generateOrderDetail(orderId, batches, totalAmount, totalQty);
 }

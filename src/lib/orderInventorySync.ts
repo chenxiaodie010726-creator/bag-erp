@@ -1,7 +1,7 @@
 import type { OrderDetailData } from '@/app/(dashboard)/orders/[id]/_components/mockData';
 import type { OrderItem } from '@/app/(dashboard)/orders/_components/mockData';
 import type { PoGroupData, SkuItem } from '@/app/(dashboard)/inventory/_components/mockData';
-import { COLOR_NAME_ZH_MAP, MOCK_PRODUCTS } from '@/app/(dashboard)/products/_components/mockData';
+import { COLOR_NAME_ZH_MAP } from '@/app/(dashboard)/products/_components/mockData';
 import type { ProductListItem } from '@/app/(dashboard)/products/_components/mockData';
 import { guessColorCodeFromSku } from '@/lib/colorDisplay';
 import { STORAGE_KEYS } from './storageKeys';
@@ -26,12 +26,12 @@ function loadInventory(): PoGroupData[] {
 }
 
 function loadProducts(): ProductListItem[] {
-  if (typeof window === 'undefined') return MOCK_PRODUCTS;
+  if (typeof window === 'undefined') return [];
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
     if (raw) return JSON.parse(raw);
   } catch { /* ignore */ }
-  return MOCK_PRODUCTS;
+  return [];
 }
 
 function lookupProductImage(sku: string, products: ProductListItem[]): string | null {
